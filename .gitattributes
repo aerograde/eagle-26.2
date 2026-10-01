@@ -1,0 +1,2 @@
+# The packaged standalone client is a large binary artifact: keep it in Git LFS.
+dist/*.html filter=lfs diff=lfs merge=lfs -text

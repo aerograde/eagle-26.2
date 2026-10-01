@@ -1,0 +1,19 @@
+{
+  "pack": {
+    "min_format": [88, 0],
+    "max_format": [88, 0],
+    "description": "Eaglercraft 26.2"
+  },
+  "language": {
+    "en_us": {
+      "name": "English",
+      "region": "United States",
+      "bidirectional": false
+    },
+    "zh_cn": {
+      "name": "简体中文",
+      "region": "中国大陆",
+      "bidirectional": false
+    }
+  }
+}

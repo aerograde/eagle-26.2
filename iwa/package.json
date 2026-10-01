@@ -1,0 +1,14 @@
+{
+  "name": "eaglercraft-26-2-iwa",
+  "private": true,
+  "version": "0.6.7",
+  "description": "Production Isolated Web App packaging for Eaglercraft 26.2 Direct Sockets",
+  "dependencies": {
+    "wbn": "0.0.9",
+    "wbn-sign": "0.3.1"
+  },
+  "scripts": {
+    "build": "node build-iwa.mjs",
+    "echo": "node loopback-echo.mjs"
+  }
+}

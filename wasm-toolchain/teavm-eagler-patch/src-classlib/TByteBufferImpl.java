@@ -1,0 +1,584 @@
+/*
+ *  Copyright 2015 Alexey Andreev.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ */
+package org.teavm.classlib.java.nio;
+
+class TByteBufferImpl extends TByteBuffer {
+    private int capacity;
+    private int start;
+    byte[] array;
+    private boolean direct;
+    private boolean readOnly;
+
+    TByteBufferImpl(int capacity, boolean direct) {
+        this(0, capacity, new byte[capacity], 0, capacity, direct, false);
+    }
+
+    TByteBufferImpl(int start, int capacity, byte[] array, int position, int limit, boolean direct, boolean readOnly) {
+        this.start = start;
+        this.capacity = capacity;
+        this.array = array;
+        this.position = position;
+        this.limit = limit;
+        this.direct = direct;
+        this.readOnly = readOnly;
+    }
+
+    @Override
+    boolean hasArrayImpl() {
+        return true;
+    }
+
+    @Override
+    byte[] arrayImpl() {
+        return array;
+    }
+
+    @Override
+    int arrayOffsetImpl() {
+        return start;
+    }
+
+    @Override
+    int capacityImpl() {
+        return capacity;
+    }
+
+    @Override
+    public TByteBuffer slice() {
+        return new TByteBufferImpl(position + start, limit - position,  array, 0, limit - position,
+                direct, readOnly);
+    }
+
+    @Override
+    public TByteBuffer duplicate() {
+        return new TByteBufferImpl(start, capacity, array, position, limit, direct, readOnly);
+    }
+
+    @Override
+    public TByteBuffer asReadOnlyBuffer() {
+        return new TByteBufferImpl(start, capacity, array, position, limit, direct, true);
+    }
+
+    @Override
+    public byte get() {
+        if (position >= limit) {
+            throw new TBufferUnderflowException();
+        }
+        return array[start + position++];
+    }
+
+    @Override
+    public TByteBuffer put(byte b) {
+        if (readOnly) {
+            throw new TReadOnlyBufferException();
+        }
+        if (position >= limit) {
+            throw new TBufferOverflowException();
+        }
+        array[start + position++] = b;
+        return this;
+    }
+
+    @Override
+    public byte get(int index) {
+        if (index < 0 || index >= limit) {
+            throw new IndexOutOfBoundsException("Index " + index + " is outside of range [0;" + limit + ")");
+        }
+        return array[start + index];
+    }
+
+    @Override
+    public TByteBuffer put(int index, byte b) {
+        if (readOnly) {
+            throw new TReadOnlyBufferException();
+        }
+        if (index < 0 || index >= limit) {
+            throw new IndexOutOfBoundsException("Index " + index + " is outside of range [0;" + limit + ")");
+        }
+        array[start + index] = b;
+        return this;
+    }
+
+    @Override
+    void getImpl(int index, byte[] dst, int offset, int length) {
+        System.arraycopy(array, start + index, dst, offset, length);
+    }
+
+    @Override
+    void putImpl(int index, TByteBuffer src, int offset, int length) {
+        if (src.hasArray()) {
+            // wasm-gc mesh-corruption fix: this is put(index, src, offset, length) where index is the
+            // DEST logical position and offset is the SOURCE logical position (cf. the else branch:
+            // put(index+i, src.get(offset+i))). The old code read from src.position() (wrong: ignores
+            // arrayOffset and uses position, not offset) and wrote to start+offset (wrong: offset is the
+            // SOURCE index). That scrambled every MemoryUtil.memCopy staging append after the first per
+            // frame -> garbage vertex/index bytes -> black spikes + stale-geometry break desync.
+            System.arraycopy(src.array(), src.arrayOffset() + offset, array, start + index, length);
+        } else {
+            for (var i = 0; i < length; i++) {
+                put(index + i, src.get(offset + i));
+            }
+        }
+    }
+
+    @Override
+    void putImpl(byte[] src, int srcOffset, int destOffset, int length) {
+        System.arraycopy(src, srcOffset, array, start + destOffset, length);
+    }
+
+    @Override
+    public TByteBuffer compact() {
+        if (readOnly) {
+            throw new TReadOnlyBufferException();
+        }
+        int sz = remaining();
+        if (position > 0) {
+            int dst = start;
+            int src = start + position;
+            for (int i = 0; i < sz; ++i) {
+                array[dst++] = array[src++];
+            }
+        }
+        position = sz;
+        limit = capacity;
+        mark = -1;
+        return this;
+    }
+
+    @Override
+    public boolean isDirect() {
+        return direct;
+    }
+
+    @Override
+    public boolean isReadOnly() {
+        return readOnly;
+    }
+
+    @Override
+    public char getChar() {
+        if (position + 1 >= limit) {
+            throw new TBufferUnderflowException();
+        }
+        int a = array[start + position] & 0xFF;
+        int b = array[start + position + 1] & 0xFF;
+        position += 2;
+        if (order == TByteOrder.BIG_ENDIAN) {
+            return (char) ((a << 8) | b);
+        } else {
+            return (char) ((b << 8) | a);
+        }
+    }
+
+    @Override
+    public TByteBuffer putChar(char value) {
+        if (readOnly) {
+            throw new TReadOnlyBufferException();
+        }
+        if (position + 1 >= limit) {
+            throw new TBufferOverflowException();
+        }
+        if (order == TByteOrder.BIG_ENDIAN) {
+            array[start + position++] = (byte) (value >> 8);
+            array[start + position++] = (byte) value;
+        } else {
+            array[start + position++] = (byte) value;
+            array[start + position++] = (byte) (value >> 8);
+        }
+        return this;
+    }
+
+    @Override
+    public char getChar(int index) {
+        if (index < 0 || index + 1 >= limit) {
+            throw new IndexOutOfBoundsException("Index " + index + " is outside of range [0;" + (limit - 1) + ")");
+        }
+        int a = array[start + index] & 0xFF;
+        int b = array[start + index + 1] & 0xFF;
+        if (order == TByteOrder.BIG_ENDIAN) {
+            return (char) ((a << 8) | b);
+        } else {
+            return (char) ((b << 8) | a);
+        }
+    }
+
+    @Override
+    public TByteBuffer putChar(int index, char value) {
+        if (readOnly) {
+            throw new TReadOnlyBufferException();
+        }
+        if (index < 0 || index + 1 >= limit) {
+            throw new IndexOutOfBoundsException("Index " + index + " is outside of range [0;" + (limit - 1) + ")");
+        }
+        if (order == TByteOrder.BIG_ENDIAN) {
+            array[start + index] = (byte) (value >> 8);
+            array[start + index + 1] = (byte) value;
+        } else {
+            array[start + index] = (byte) value;
+            array[start + index + 1] = (byte) (value >> 8);
+        }
+        return this;
+    }
+
+    @Override
+    public TCharBuffer asCharBuffer() {
+        int sz = remaining() / 2;
+        if (order == TByteOrder.BIG_ENDIAN) {
+            return new TCharBufferOverByteBufferBigEndian(start + position, sz, this, 0, sz, isReadOnly());
+        } else {
+            return new TCharBufferOverByteBufferLittleEndian(start + position, sz, this, 0, sz, isReadOnly());
+        }
+    }
+
+    @Override
+    public short getShort() {
+        if (position + 1 >= limit) {
+            throw new TBufferUnderflowException();
+        }
+        int a = array[start + position] & 0xFF;
+        int b = array[start + position + 1] & 0xFF;
+        position += 2;
+        if (order == TByteOrder.BIG_ENDIAN) {
+            return (short) ((a << 8) | b);
+        } else {
+            return (short) ((b << 8) | a);
+        }
+    }
+
+    @Override
+    public TByteBuffer putShort(short value) {
+        if (readOnly) {
+            throw new TReadOnlyBufferException();
+        }
+        if (position + 1 >= limit) {
+            throw new TBufferOverflowException();
+        }
+        if (order == TByteOrder.BIG_ENDIAN) {
+            array[start + position++] = (byte) (value >> 8);
+            array[start + position++] = (byte) value;
+        } else {
+            array[start + position++] = (byte) value;
+            array[start + position++] = (byte) (value >> 8);
+        }
+        return this;
+    }
+
+    @Override
+    public short getShort(int index) {
+        if (index < 0 || index + 1 >= limit) {
+            throw new IndexOutOfBoundsException("Index " + index + " is outside of range [0;" + (limit - 1) + ")");
+        }
+        int a = array[start + index] & 0xFF;
+        int b = array[start + index + 1] & 0xFF;
+        if (order == TByteOrder.BIG_ENDIAN) {
+            return (short) ((a << 8) | b);
+        } else {
+            return (short) ((b << 8) | a);
+        }
+    }
+
+    @Override
+    public TByteBuffer putShort(int index, short value) {
+        if (readOnly) {
+            throw new TReadOnlyBufferException();
+        }
+        if (index < 0 || index + 1 >= limit) {
+            throw new IndexOutOfBoundsException("Index " + index + " is outside of range [0;" + (limit - 1) + ")");
+        }
+        if (order == TByteOrder.BIG_ENDIAN) {
+            array[start + index] = (byte) (value >> 8);
+            array[start + index + 1] = (byte) value;
+        } else {
+            array[start + index] = (byte) value;
+            array[start + index + 1] = (byte) (value >> 8);
+        }
+        return this;
+    }
+
+    @Override
+    public TShortBuffer asShortBuffer() {
+        int sz = remaining() / 2;
+        if (order == TByteOrder.BIG_ENDIAN) {
+            return new TShortBufferOverByteBufferBigEndian(start + position, sz, this, 0, sz, isReadOnly());
+        } else {
+            return new TShortBufferOverByteBufferLittleEndian(start + position, sz, this, 0, sz, isReadOnly());
+        }
+    }
+
+    @Override
+    public int getInt() {
+        if (position + 3 >= limit) {
+            throw new TBufferUnderflowException();
+        }
+        int a = array[start + position] & 0xFF;
+        int b = array[start + position + 1] & 0xFF;
+        int c = array[start + position + 2] & 0xFF;
+        int d = array[start + position + 3] & 0xFF;
+        position += 4;
+        if (order == TByteOrder.BIG_ENDIAN) {
+            return (a << 24) | (b << 16) | (c << 8) | d;
+        } else {
+            return (d << 24) | (c << 16) | (b << 8) | a;
+        }
+    }
+
+    @Override
+    public TByteBuffer putInt(int value) {
+        if (readOnly) {
+            throw new TReadOnlyBufferException();
+        }
+        if (position + 3 >= limit) {
+            throw new TBufferOverflowException();
+        }
+        if (order == TByteOrder.BIG_ENDIAN) {
+            array[start + position++] = (byte) (value >> 24);
+            array[start + position++] = (byte) (value >> 16);
+            array[start + position++] = (byte) (value >> 8);
+            array[start + position++] = (byte) value;
+        } else {
+            array[start + position++] = (byte) value;
+            array[start + position++] = (byte) (value >> 8);
+            array[start + position++] = (byte) (value >> 16);
+            array[start + position++] = (byte) (value >> 24);
+        }
+        return this;
+    }
+
+    @Override
+    public int getInt(int index) {
+        if (index < 0 || index + 3 >= limit) {
+            throw new IndexOutOfBoundsException("Index " + index + " is outside of range [0;" + (limit - 3) + ")");
+        }
+        int a = array[start + index] & 0xFF;
+        int b = array[start + index + 1] & 0xFF;
+        int c = array[start + index + 2] & 0xFF;
+        int d = array[start + index + 3] & 0xFF;
+        if (order == TByteOrder.BIG_ENDIAN) {
+            return (a << 24) | (b << 16) | (c << 8) | d;
+        } else {
+            return (d << 24) | (c << 16) | (b << 8) | a;
+        }
+    }
+
+    @Override
+    public TByteBuffer putInt(int index, int value) {
+        if (readOnly) {
+            throw new TReadOnlyBufferException();
+        }
+        if (index < 0 || index + 3 >= limit) {
+            throw new IndexOutOfBoundsException("Index " + index + " is outside of range [0;" + (limit - 3) + ")");
+        }
+        if (order == TByteOrder.BIG_ENDIAN) {
+            array[start + index] = (byte) (value >> 24);
+            array[start + index + 1] = (byte) (value >> 16);
+            array[start + index + 2] = (byte) (value >> 8);
+            array[start + index + 3] = (byte) value;
+        } else {
+            array[start + index] = (byte) value;
+            array[start + index + 1] = (byte) (value >> 8);
+            array[start + index + 2] = (byte) (value >> 16);
+            array[start + index + 3] = (byte) (value >> 24);
+        }
+        return this;
+    }
+
+    @Override
+    public TIntBuffer asIntBuffer() {
+        int sz = remaining() / 4;
+        if (order == TByteOrder.BIG_ENDIAN) {
+            return new TIntBufferOverByteBufferBigEndian(start + position, sz, this, 0, sz, isReadOnly());
+        } else {
+            return new TIntBufferOverByteBufferLittleEndian(start + position, sz, this, 0, sz, isReadOnly());
+        }
+    }
+
+    @Override
+    public float getFloat() {
+        return Float.intBitsToFloat(getInt());
+    }
+
+    @Override
+    public TByteBuffer putFloat(float value) {
+        return putInt(Float.floatToRawIntBits(value));
+    }
+
+    @Override
+    public TByteBuffer putFloat(int index, float value) {
+        return putInt(index, Float.floatToRawIntBits(value));
+    }
+
+    @Override
+    public float getFloat(int index) {
+        return Float.intBitsToFloat(getInt(index));
+    }
+
+    @Override
+    public double getDouble() {
+        return Double.longBitsToDouble(getLong());
+    }
+
+    @Override
+    public TByteBuffer putDouble(double value) {
+        return putLong(Double.doubleToRawLongBits(value));
+    }
+
+    @Override
+    public double getDouble(int index) {
+        return Double.longBitsToDouble(getLong(index));
+    }
+
+    @Override
+    public TByteBuffer putDouble(int index, double value) {
+        return putLong(index, Double.doubleToRawLongBits(value));
+    }
+
+    @Override
+    public long getLong() {
+        if (position + 7 >= limit) {
+            throw new TBufferUnderflowException();
+        }
+        long a = array[start + position] & 0xFF;
+        long b = array[start + position + 1] & 0xFF;
+        long c = array[start + position + 2] & 0xFF;
+        long d = array[start + position + 3] & 0xFF;
+        long e = array[start + position + 4] & 0xFF;
+        long f = array[start + position + 5] & 0xFF;
+        long g = array[start + position + 6] & 0xFF;
+        long h = array[start + position + 7] & 0xFF;
+        position += 8;
+        if (order == TByteOrder.BIG_ENDIAN) {
+            return (a << 56) | (b << 48) | (c << 40) | (d << 32) | (e << 24) | (f << 16) | (g << 8) | h;
+        } else {
+            return (h << 56) | (g << 48) | (f << 40) | (e << 32) | (d << 24) | (c << 16) | (b << 8) | a;
+        }
+    }
+
+    @Override
+    public TByteBuffer putLong(long value) {
+        if (readOnly) {
+            throw new TReadOnlyBufferException();
+        }
+        if (position + 7 >= limit) {
+            throw new TBufferOverflowException();
+        }
+        if (order == TByteOrder.BIG_ENDIAN) {
+            array[start + position++] = (byte) (value >> 56);
+            array[start + position++] = (byte) (value >> 48);
+            array[start + position++] = (byte) (value >> 40);
+            array[start + position++] = (byte) (value >> 32);
+            array[start + position++] = (byte) (value >> 24);
+            array[start + position++] = (byte) (value >> 16);
+            array[start + position++] = (byte) (value >> 8);
+            array[start + position++] = (byte) value;
+        } else {
+            array[start + position++] = (byte) value;
+            array[start + position++] = (byte) (value >> 8);
+            array[start + position++] = (byte) (value >> 16);
+            array[start + position++] = (byte) (value >> 24);
+            array[start + position++] = (byte) (value >> 32);
+            array[start + position++] = (byte) (value >> 40);
+            array[start + position++] = (byte) (value >> 48);
+            array[start + position++] = (byte) (value >> 56);
+        }
+        return this;
+    }
+
+    @Override
+    public long getLong(int index) {
+        if (index < 0 || index + 7 >= limit) {
+            throw new IndexOutOfBoundsException("Index " + index + " is outside of range [0;" + (limit - 7) + ")");
+        }
+        long a = array[start + index] & 0xFF;
+        long b = array[start + index + 1] & 0xFF;
+        long c = array[start + index + 2] & 0xFF;
+        long d = array[start + index + 3] & 0xFF;
+        long e = array[start + index + 4] & 0xFF;
+        long f = array[start + index + 5] & 0xFF;
+        long g = array[start + index + 6] & 0xFF;
+        long h = array[start + index + 7] & 0xFF;
+        // EAGLER wasm-gc BLOCKER #20 root fix: STOCK TeaVM 0.13 bug -- the ABSOLUTE getLong(int index) must
+        // NOT advance the buffer position (getInt(int)/getShort(int)/getChar(int) correctly do not; only the
+        // RELATIVE getLong() advances). The stray `position += 8;` here made PngInfo.validateHeader's
+        // getLong(0) skip the 8-byte PNG signature, so NativeImage's stbi read started at the IHDR chunk ->
+        // "not a PNG file" -> every font bitmap + mojangstudios.png failed the resource reload. JS uses
+        // TByteBufferJsImpl (DataView getBigInt64, no advance) so this impl is wasm-gc-only -> JS byte-identical.
+        if (order == TByteOrder.BIG_ENDIAN) {
+            return (a << 56) | (b << 48) | (c << 40) | (d << 32) | (e << 24) | (f << 16) | (g << 8) | h;
+        } else {
+            return (h << 56) | (g << 48) | (f << 40) | (e << 32) | (d << 24) | (c << 16) | (b << 8) | a;
+        }
+    }
+
+    @Override
+    public TByteBuffer putLong(int index, long value) {
+        if (readOnly) {
+            throw new TReadOnlyBufferException();
+        }
+        if (index < 0 || index + 3 >= limit) {
+            throw new IndexOutOfBoundsException("Index " + index + " is outside of range [0;" + (limit - 3) + ")");
+        }
+        if (order == TByteOrder.BIG_ENDIAN) {
+            array[start + index + 0] = (byte) (value >> 56);
+            array[start + index + 1] = (byte) (value >> 48);
+            array[start + index + 2] = (byte) (value >> 40);
+            array[start + index + 3] = (byte) (value >> 32);
+            array[start + index + 4] = (byte) (value >> 24);
+            array[start + index + 5] = (byte) (value >> 16);
+            array[start + index + 6] = (byte) (value >> 8);
+            array[start + index + 7] = (byte) value;
+        } else {
+            array[start + index + 0] = (byte) value;
+            array[start + index + 1] = (byte) (value >> 8);
+            array[start + index + 2] = (byte) (value >> 16);
+            array[start + index + 3] = (byte) (value >> 24);
+            array[start + index + 4] = (byte) (value >> 32);
+            array[start + index + 5] = (byte) (value >> 40);
+            array[start + index + 6] = (byte) (value >> 48);
+            array[start + index + 7] = (byte) (value >> 56);
+        }
+        return this;
+    }
+
+    @Override
+    public TLongBuffer asLongBuffer() {
+        int sz = remaining() / 8;
+        if (order == TByteOrder.BIG_ENDIAN) {
+            return new TLongBufferOverByteBufferBigEndian(start + position, sz, this, 0, sz, isReadOnly());
+        } else {
+            return new TLongBufferOverByteBufferLittleEndian(start + position, sz, this, 0, sz, isReadOnly());
+        }
+    }
+
+    @Override
+    public TFloatBuffer asFloatBuffer() {
+        int sz = remaining() / 4;
+        if (order == TByteOrder.LITTLE_ENDIAN) {
+            return new TFloatBufferOverByteBufferBigEndian(start + position, sz, this, 0, sz, isReadOnly());
+        } else {
+            return new TFloatBufferOverByteBufferLittleEndian(start + position, sz, this, 0, sz, isReadOnly());
+        }
+    }
+
+    @Override
+    public TDoubleBuffer asDoubleBuffer() {
+        int sz = remaining() / 8;
+        if (order == TByteOrder.LITTLE_ENDIAN) {
+            return new TDoubleBufferOverByteBufferBigEndian(start + position, sz, this, 0, sz, isReadOnly());
+        } else {
+            return new TDoubleBufferOverByteBufferLittleEndian(start + position, sz, this, 0, sz, isReadOnly());
+        }
+    }
+}

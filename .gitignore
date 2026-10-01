@@ -1,0 +1,20 @@
+# Build outputs
+build/
+**/build/
+.gradle/
+node_modules/
+
+# Inputs the patcher recreates from your own official Minecraft 26.2 jar
+source/
+game/src/main/resources/assets/
+game/src/main/resources/data/
+
+# Generated link intermediates, logs and audio packs
+wasm-toolchain/generated/
+*.log
+*.zip
+
+# Local noise
+.DS_Store
+.idea/
+*.iml

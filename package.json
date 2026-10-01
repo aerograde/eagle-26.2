@@ -1,0 +1,18 @@
+{
+  "name": "eaglercraft-26.2-build-tools",
+  "private": true,
+  "scripts": {
+    "build:dev:web": "node wasm-toolchain/build-dev-web.js",
+    "build:dev:web:client": "node wasm-toolchain/build-dev-web.js --reuse-mesh --reuse-server",
+    "build:dev:web:diagnostic": "node wasm-toolchain/build-dev-web.js --reuse-mesh --reuse-server --diagnostic",
+    "deploy:dev:web": "node wasm-toolchain/build-dev-web.js --reuse-client --reuse-mesh --reuse-server",
+    "build:single": "node wasm-toolchain/build-single-html.js",
+    "build:release:web:tested": "node wasm-toolchain/build-single-html.js --reuse-client --reuse-mesh --reuse-server",
+    "pack:single": "node wasm-toolchain/build-single-html.js --skip-build",
+    "build:single:lean": "node wasm-toolchain/build-single-html.js",
+    "pack:single:lean": "node wasm-toolchain/build-single-html.js --skip-build"
+  },
+  "dependencies": {
+    "brotli-dec-wasm": "2.3.2"
+  }
+}
