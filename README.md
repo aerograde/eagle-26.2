@@ -12,8 +12,11 @@ hashes of that patch run.
 ## Direct-connect room (this pass)
 
 Direct connect carries Minecraft's LAN traffic over ordinary WebRTC peer
-connections: no relay server, no STUN/TURN, no signaling service. The two users
-exchange short text codes by hand.
+connections: no relay server and no signaling service — the two users exchange
+short text codes by hand. The peer connections use the free public STUN servers
+(`stun.l.google.com:19302`, `stun1.l.google.com:19302`,
+`stun.services.mozilla.com:3478`) as `iceServers`, so each side also gathers a
+server-reflexive candidate and NAT traversal works in the usual cases.
 
 * The host publishes with the host URI `eagler-direct:` through the normal LAN
   world pipeline, so the integrated server, the `~!LAN` peer bridge and the
@@ -21,7 +24,7 @@ exchange short text codes by hand.
 * A WebRTC transport is 1:1, so **the room mints one offer code per guest** and
   consumes that guest's answer code. Guests already in the world keep playing
   while the next invite is handed out; the room screen shows
-  `Room: N link(s), M connected`.
+  `Room: N invited, M connected`.
 * The room, not a module-level singleton, owns peer state. `DirectRoom` holds
   the pending invite, the map of guest links, the per-guest inbound queues and a
   small event queue. Each guest link is a `DirectPeer` (peer connection + data
@@ -41,10 +44,11 @@ exchange short text codes by hand.
 | Host/join platform entry points | `platform-teavm/src/main/java/net/lax1dude/eaglercraft/v1_8/sp/internal/ClientPlatformSingleplayer.java` (stubs in `platform/` and `platform-lwjgl/`) |
 | Game-side controller and screens | `game/src/main/java/net/lax1dude/eaglercraft/v1_8/sp/SingleplayerServerController26.java`, `.../sp/gui/EaglerDirectConnectHostScreen.java`, `.../sp/gui/EaglerDirectConnectJoinScreen.java` |
 
-Because Chrome mDNS-obfuscates host ICE candidates per origin, both players must
-load the client from the **same origin** for the direct connection to leave the
-`new` ICE state; that is a browser behaviour, not something the client can work
-around.
+Chrome mDNS-obfuscates host ICE candidates per origin, which used to stop two
+players on different origins from ever pairing. The STUN servers above add a
+server-reflexive candidate to every direct-connect peer, so the same client
+served from two different origins (or two different machines) still finds a
+working candidate pair on typical home networks.
 
 ## What is tracked here
 

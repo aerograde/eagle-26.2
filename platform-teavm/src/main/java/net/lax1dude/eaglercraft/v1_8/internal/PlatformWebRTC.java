@@ -1023,12 +1023,23 @@ public class PlatformWebRTC {
 	// The room owns every peer of the session. A WebRTC peer connection is a
 	// 1:1 transport, so the host keeps one link per guest and mints one offer
 	// code per guest: a guest pastes the code shown on the host's screen and
-	// hands back an answer code, which the host applies. Every link is an
-	// ordinary "lan" data channel that the worker bridge sees as its own LAN
+	// hands back an answer code, which the host applies. Every link is an	// ordinary "lan" data channel that the worker bridge sees as its own LAN
 	// peer id, so several guests share the world at the same time through the
-	// unchanged game-side protocol. There is no signaling server and no
-	// STUN/TURN: the codes carry the ICE host candidates directly.
+	// unchanged game-side protocol. There is no signaling server: the codes
+	// carry the ICE candidates directly, host candidates plus the server-
+	// reflexive (srflx) candidates discovered through the free public STUN
+	// servers below.
 	// ------------------------------------------------------------------
+
+	/** Free public STUN servers for the direct-connect room. Without them both
+	 *  browsers gather only host candidates, which Chrome obfuscates behind
+	 *  per-origin mDNS names, so two machines on different origins can never
+	 *  find a path to each other. STUN adds a server-reflexive candidate for
+	 *  every direct peer, host and guest alike. The relay/LAN path keeps its
+	 *  own relay-configured server list and is not affected by this. */
+	private static final String DIRECT_ICE_SERVERS = "[{\"urls\":\"stun:stun.l.google.com:19302\"},"
+			+ "{\"urls\":\"stun:stun1.l.google.com:19302\"},"
+			+ "{\"urls\":\"stun:stun.services.mozilla.com:3478\"}]";
 
 	/** Lifecycle of one room peer; drained by the client platform so the
 	 *  integrated server's LAN peer map tracks the WebRTC links. */
@@ -1070,7 +1081,7 @@ public class PlatformWebRTC {
 
 		/** Host: open a fresh link and return its offer code, null on failure. */
 		String createOfferCode() {
-			peerConnection = createRTCPeerConnection("[]");
+			peerConnection = createRTCPeerConnection(DIRECT_ICE_SERVERS);
 			final JSObject connection = peerConnection;
 			listenCandidates(connection);
 			listenConnectionState(connection);
@@ -1091,7 +1102,7 @@ public class PlatformWebRTC {
 
 		/** Guest: answer an offer and return the answer code, null on failure. */
 		String acceptOfferCode(String offerJSON) {
-			peerConnection = createRTCPeerConnection("[]");
+			peerConnection = createRTCPeerConnection(DIRECT_ICE_SERVERS);
 			final JSObject connection = peerConnection;
 			listenCandidates(connection);
 			listenConnectionState(connection);

@@ -436,9 +436,18 @@ public class ClientPlatformSingleplayer {
 	}
 
 	public static void closeLANRelay() {
-		if(directMode != 0) {
+		if(directMode == 1) {
+			// Hosting: the room *is* the LAN publication, so unpublishing it
+			// retires the invites and the guest links with it.
 			closeDirectConnect();
 		}
+		// Joining (directMode == 2): the direct session is the transport for the
+		// connection that is being made right now. ConnectScreen always runs
+		// prepareForRemoteMultiplayer() -> unpublishLANRelay() before it opens
+		// the server socket, so closing the session here would tear down the very
+		// channel the Netty bridge is about to attach to and the join would fail
+		// with "the direct connect session was closed (code 1006)". The guest
+		// session is closed by the join screen or by the transport itself.
 		if(LegacyLANHost.isOpen()) {
 			logger.error("Closing an active legacy LAN relay; tracing the caller");
 			logger.error(new Throwable("Legacy LAN relay close caller"));

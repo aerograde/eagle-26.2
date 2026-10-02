@@ -100,7 +100,7 @@ public class SelectWorldScreen extends Screen {
       GridLayout.RowHelper rowHelper = footer.createRowHelper(4);
       if (net.lax1dude.eaglercraft.v1_8.minecraft.EaglerHosted.isActive()) {
          rowHelper.addChild(
-            Button.builder(Component.translatableWithFallback("singleplayer.create.joinLan", "Join LAN World"), button -> this.openLANJoin()).build(), 4
+            Button.builder(Component.translatableWithFallback("singleplayer.create.joinLan", "Join LAN / Direct Connect"), button -> this.openLANJoin()).build(), 4
          );
       }
       this.playWorldButton = rowHelper.addChild(Button.builder(LevelSummary.PLAY_WORLD, button -> list.getSelectedOpt().ifPresent(joinWorld)).build(), 2);

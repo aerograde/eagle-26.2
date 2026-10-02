@@ -128,6 +128,11 @@ public class DirectJoinServerScreen extends Screen {
       this.joinCodeEdit = new EditBox(this.font, this.width / 2 - 100, codeY, 156, 20,
          Component.translatableWithFallback("multiplayer.lan.joinCode", "LAN join code"));
       this.joinCodeEdit.setMaxLength(1024);
+      if (this.lanOnly) {
+         // A "EG..." code pasted here is a relay-free direct connect invite.
+         this.joinCodeEdit.setHint(Component.translatableWithFallback("multiplayer.lan.joinCodeHint",
+            "Paste a LAN or direct connect code"));
+      }
       this.joinCodeEdit.setResponder(value -> {
          if (!this.normalizingJoinCode) {
             String cleaned = value == null ? "" : value.replaceAll("\\s+", "");

@@ -13,14 +13,19 @@ import net.minecraft.network.chat.CommonComponents;
 import net.minecraft.network.chat.Component;
 
 /**
- * Guest side of the relay-free "Direct connect" flow. The offer code was pasted
- * in the join screen; this screen reduces it to an answer code (shown as text
- * with a copy button) and waits for the host to apply that answer. The WebRTC
- * data channel is already establishing in the background, so once it opens the
- * screen hands control back to the join callback, which starts the ordinary
- * connect flow against the {@code eagler-direct:} virtual URI.
+ * Guest side of the relay-free "Direct connect" flow. The invite code was
+ * pasted in the LAN join screen; this screen reduces it to an answer code
+ * (shown as text with a copy button) and waits for the host to apply that
+ * answer. The WebRTC data channel is already establishing in the background,
+ * so once it opens the screen hands control back to the join callback, which
+ * starts the ordinary connect flow against the {@code eagler-direct:} virtual
+ * URI. The peer connection uses the same free public STUN servers as the
+ * host, so both sides gather a server-reflexive candidate; no relay server is
+ * involved.
  */
 public class EaglerDirectConnectJoinScreen extends Screen {
+
+	private static final int COPY_FEEDBACK_TICKS = 40;
 
 	private static final int STATE_GENERATING = 0;
 	private static final int STATE_WAITING = 1;
@@ -38,10 +43,11 @@ public class EaglerDirectConnectJoinScreen extends Screen {
 	private String errorText;
 	private int state = STATE_GENERATING;
 	private int advanceTimer;
+	private int copyFeedbackTimer = -1;
 
 	public EaglerDirectConnectJoinScreen(Screen parent, ServerData serverData, BooleanConsumer callback,
 			String offerCode) {
-		super(Component.translatableWithFallback("direct.join.title", "Direct Connect"));
+		super(Component.translatableWithFallback("direct.join.title", "Join Direct Connect Room"));
 		this.parent = parent;
 		this.serverData = serverData;
 		this.callback = callback;
@@ -51,20 +57,41 @@ public class EaglerDirectConnectJoinScreen extends Screen {
 	@Override
 	protected void init() {
 		int centerX = this.width / 2;
-		this.statusWidget = this.addRenderableWidget(new StringWidget(centerX, 34, 0, 9,
-				Component.translatableWithFallback("direct.join.creating", "Creating answer code..."), this.font));
+		this.statusWidget = this.addRenderableWidget(new StringWidget(0, 28, 0, 9,
+				Component.translatableWithFallback("direct.join.creating", "Preparing your answer code..."), this.font));
+		this.setStatus(Component.translatableWithFallback("direct.join.creating", "Preparing your answer code..."));
 		this.copyButton = this.addRenderableWidget(Button.builder(
-				Component.translatableWithFallback("direct.copy", "Copy Code"), button -> {
+				Component.translatableWithFallback("direct.join.copy", "Copy Answer Code"), button -> {
 					String code = this.answerCode;
 					if(code != null && !code.isBlank()) {
 						EagRuntime.setClipboard(code);
 						button.setMessage(Component.translatableWithFallback("direct.copied", "Copied!")
 								.withStyle(ChatFormatting.GREEN));
+						this.copyFeedbackTimer = COPY_FEEDBACK_TICKS;
 					}
 				}).bounds(centerX - 152, this.height / 2 + 40, 304, 20).build());
 		this.copyButton.active = this.answerCode != null;
 		this.addRenderableWidget(Button.builder(CommonComponents.GUI_CANCEL, button -> this.onClose())
 				.bounds(centerX - 152, this.height / 2 + 66, 304, 20).build());
+	}
+
+	private void setStatus(Component message) {
+		if(this.statusWidget == null) {
+			return;
+		}
+		this.statusWidget.setMessage(message);
+		// StringWidget draws left-aligned from its x, so center it by hand.
+		this.statusWidget.setX(this.width / 2 - this.font.width(message) / 2);
+	}
+
+	private void updateCopyButton() {
+		if(this.copyButton != null) {
+			if(this.copyFeedbackTimer > 0) {
+				return;
+			}
+			this.copyButton.setMessage(Component.translatableWithFallback("direct.join.copy", "Copy Answer Code"));
+			this.copyButton.active = this.answerCode != null;
+		}
 	}
 
 	@Override
@@ -101,7 +128,7 @@ public class EaglerDirectConnectJoinScreen extends Screen {
 			}
 			break;
 		case STATE_CONNECTED:
-			this.statusWidget.setMessage(Component.translatableWithFallback("direct.join.connected",
+			this.setStatus(Component.translatableWithFallback("direct.join.connected",
 					"Connected! Entering the world..."));
 			if(++this.advanceTimer > 10) {
 				this.serverData.setConnectionMode(ServerData.ConnectionMode.RELAY);
@@ -112,11 +139,15 @@ public class EaglerDirectConnectJoinScreen extends Screen {
 		default:
 			break;
 		}
-		if(this.errorText != null && this.statusWidget != null) {
-			this.statusWidget.setMessage(Component.literal(this.errorText).withStyle(ChatFormatting.RED));
-		}else if(this.state == STATE_WAITING && this.statusWidget != null) {
-			this.statusWidget.setMessage(Component.translatableWithFallback("direct.join.shareAnswer",
-					"Send this answer code back to the host"));
+		if(this.copyFeedbackTimer > 0 && --this.copyFeedbackTimer == 0) {
+			this.copyFeedbackTimer = -1;
+			this.updateCopyButton();
+		}
+		if(this.errorText != null) {
+			this.setStatus(Component.literal(this.errorText).withStyle(ChatFormatting.RED));
+		}else if(this.state == STATE_WAITING) {
+			this.setStatus(Component.translatableWithFallback("direct.join.shareAnswer",
+					"Send this answer code back to the host, then wait here"));
 		}
 	}
 
@@ -129,7 +160,7 @@ public class EaglerDirectConnectJoinScreen extends Screen {
 	public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float a) {
 		super.extractRenderState(graphics, mouseX, mouseY, a);
 		int centerX = this.width / 2;
-		graphics.centeredText(this.font, this.title, centerX, 20, -1);
+		graphics.centeredText(this.font, this.title, centerX, 14, -1);
 		String code = this.answerCode;
 		if(code != null && !code.isBlank()) {
 			String[] lines = this.wrapCode(code, 300).split("\n");
@@ -138,12 +169,13 @@ public class EaglerDirectConnectJoinScreen extends Screen {
 				graphics.centeredText(this.font, Component.literal(lines[i]), centerX, y + i * 10, 0xFF55FFFF);
 			}
 			graphics.centeredText(this.font, Component.translatableWithFallback("direct.join.chars",
-					"%s characters - no server involved", code.length()), centerX, y + lines.length * 10 + 4, 0xFF8FD18F);
+					"%s characters - peer to peer, no relay server", code.length()), centerX,
+					y + lines.length * 10 + 4, 0xFF8FD18F);
 		}
 	}
 
 	private String wrapCode(String code, int maxWidth) {
-		int chunk = Math.max(8, 300 / Math.max(1, this.font.width("M")));
+		int chunk = Math.max(8, maxWidth / Math.max(1, this.font.width("M")));
 		StringBuilder sb = new StringBuilder();
 		for(int i = 0; i < code.length(); i += chunk) {
 			if(i > 0) sb.append('\n');

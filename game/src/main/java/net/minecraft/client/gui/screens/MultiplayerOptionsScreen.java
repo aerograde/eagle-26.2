@@ -165,11 +165,12 @@ public class MultiplayerOptionsScreen extends Screen {
       LinearLayout content = this.layout.addToContents(LinearLayout.vertical().spacing(6));
       content.defaultCellSetting().alignHorizontallyCenter();
       content.addChild(new StringWidget(Component.translatableWithFallback("multiplayer.direct.heading",
-         "Direct connect - no server involved"), this.font));
+         "Direct connect - peer to peer"), this.font));
       content.addChild(new StringWidget(Component.translatableWithFallback("multiplayer.direct.hint",
-         "Send a friend one code (QR or text); no relay is used.").withStyle(ChatFormatting.GRAY), this.font));
+         "Share one invite code per guest; no relay server is used.").withStyle(ChatFormatting.GRAY), this.font));
       content.addChild(Button.builder(Component.translatableWithFallback("multiplayer.direct.open",
-         SingleplayerServerController26.isDirectConnectHost() ? "Direct Connect - code ready" : "Direct Connect (QR + code)"),
+         SingleplayerServerController26.isDirectConnectHost() && SingleplayerServerController26.getLANRelayCode() != null
+            ? "Direct Connect Room - invite ready" : "Open Direct Connect Room"),
          button -> this.minecraft.gui.setScreen(
             new EaglerDirectConnectHostScreen(this, this.gameMode.getId(), this.commands))).width(200).build());
       content.addChild(new StringWidget(Component.translatableWithFallback("multiplayer.relay.heading",

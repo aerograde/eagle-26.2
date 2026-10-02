@@ -21,7 +21,7 @@ public class EaglerCreateWorldSelectionScreen extends Screen {
 	private static final Component CREATE = Component.translatableWithFallback("singleplayer.create.create", "Create New World");
 	private static final Component IMPORT_EPK = Component.translatableWithFallback("singleplayer.create.import.epk", "Import EPK World");
 	private static final Component IMPORT_MCA = Component.translatableWithFallback("singleplayer.create.import.vanilla", "Import Vanilla World");
-	private static final Component JOIN_LAN = Component.translatableWithFallback("singleplayer.create.joinLan", "Join LAN World");
+	private static final Component JOIN_LAN = Component.translatableWithFallback("singleplayer.create.joinLan", "Join LAN / Direct Connect");
 	private static final Component INVALID_FILE = Component.translatableWithFallback("singleplayer.import.invalidFile", "Invalid world file");
 
 	private final Screen parent;
