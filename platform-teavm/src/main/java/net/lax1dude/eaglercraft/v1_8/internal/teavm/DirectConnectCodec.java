@@ -78,8 +78,13 @@ public final class DirectConnectCodec {
 		for(int i = 0; i < count; ++i) {
 			Cand c = candidates.get(i);
 			byte[] addr = addressBytes(c);
-			int flags = (c.v6 ? 1 : 0) | (c.raddr != null ? 2 : 0) | (addr.length > 16 ? 4 : 0)
-					| (c.raddr != null && c.raddrHost ? 8 : 0);
+			// Bit 2/3 mean "the bytes are a hostname, not an IP literal". The decoder
+			// reads the u8 length for every address and only treats len 4/16 as an
+			// IP when the flag is clear, so hostnames of any length round-trip.
+			boolean addrHost = ipAddressBytes(c.address) == null;
+			boolean raddrHost = c.raddr != null && ipAddressBytes(c.raddr) == null;
+			int flags = (c.v6 ? 1 : 0) | (c.raddr != null ? 2 : 0) | (addrHost ? 4 : 0)
+					| (raddrHost ? 8 : 0);
 			out.write(flags);
 			out.write((c.port >> 8) & 0xFF);
 			out.write(c.port & 0xFF);
@@ -264,10 +269,10 @@ public final class DirectConnectCodec {
 			boolean addrHost = (flags & 4) != 0;
 			c.raddrHost = (flags & 8) != 0;
 			c.port = u16(b, off);
-			c.address = takeAddress(b, off, addrHost ? -1 : c.v6 ? 16 : 4);
+			c.address = takeAddress(b, off, addrHost);
 			if(hasRaddr) {
 				c.rport = u16(b, off);
-				c.raddr = takeAddress(b, off, c.raddrHost ? -1 : c.v6 ? 16 : 4);
+				c.raddr = takeAddress(b, off, c.raddrHost);
 			}
 			c.type = u8(b, off) & 0x3;
 			d.candidates.add(c);
@@ -294,15 +299,19 @@ public final class DirectConnectCodec {
 		return s;
 	}
 
-	private static String takeAddress(byte[] b, int[] off, int fixedLen) {
-		if(fixedLen > 0) {
-			if(off[0] + fixedLen > b.length) throw new IllegalArgumentException("Truncated code");
-			byte[] raw = new byte[fixedLen];
-			System.arraycopy(b, off[0], raw, 0, fixedLen);
-			off[0] += fixedLen;
-			return fixedLen == 4 ? ipv4ToString(raw) : ipv6ToString(raw);
-		}
-		return takeBytes(b, off);
+	/** Every address on the wire is a u8 length followed by that many bytes; len 4
+	 *  and len 16 are IP literals unless the hostname flag is set, anything else
+	 *  is a UTF-8 hostname (old codes wrote the same length byte, so they decode
+	 *  here too). */
+	private static String takeAddress(byte[] b, int[] off, boolean hostname) {
+		int len = u8(b, off);
+		if(off[0] + len > b.length) throw new IllegalArgumentException("Truncated code");
+		byte[] raw = new byte[len];
+		System.arraycopy(b, off[0], raw, 0, len);
+		off[0] += len;
+		if(!hostname && len == 4) return ipv4ToString(raw);
+		if(!hostname && len == 16) return ipv6ToString(raw);
+		return new String(raw, StandardCharsets.UTF_8);
 	}
 
 	private static String ipv4ToString(byte[] raw) {
