@@ -347,6 +347,10 @@ public class PlatformInput {
 		// seed window metrics so mouse-Y flipping is sane before the first update()
 		double r = getDevicePixelRatio(win);
 		if(r < 0.01) r = 1.0;
+		double renderScale = renderResolutionScale();
+		if(renderScale != 1.0) {
+			r *= renderScale;
+		}
 		windowDPI = (float)r;
 		windowWidth = canvas.getWidth();
 		windowHeight = canvas.getHeight();
@@ -1305,6 +1309,36 @@ public class PlatformInput {
 	@JSBody(params = { "doc" }, script = "return (typeof doc.visibilityState !== \"string\") || (doc.visibilityState === \"visible\");")
 	private static native boolean getVisibilityState(JSObject doc);
 
+	/**
+	 * Opt-in render resolution scale: {@code ?dpr=<factor>} on the URL or
+	 * {@code eaglercraftXOpts.resolutionScale} in the page. The backing store is
+	 * sized clientSize * devicePixelRatio * scale, so 0.75 renders ~44% of the
+	 * pixels and 0.5 renders ~25% — the largest single frame-time lever on a
+	 * high-DPI display. Default 1.0 keeps the existing native-DPR behavior.
+	 * Clamped to [0.5, 2.0] so a typo cannot ask for an absurd framebuffer.
+	 */
+	private static double renderResolutionScale = -1.0;
+
+	private static double renderResolutionScale() {
+		if(renderResolutionScale < 0.0) {
+			renderResolutionScale = getRenderResolutionScaleTeaVM();
+			if(renderResolutionScale != 1.0) {
+				System.out.println("eagler: render resolution scale " + renderResolutionScale + "x");
+			}
+		}
+		return renderResolutionScale;
+	}
+
+	@JSBody(params = {}, script = "var s = 1.0;"
+			+ " try { var o = (typeof eaglercraftXOpts !== \"undefined\") ? eaglercraftXOpts : null;"
+			+ " if (o && typeof o.resolutionScale === \"number\") { s = o.resolutionScale; }"
+			+ " var p = new URLSearchParams(window.location.search);"
+			+ " if (p.has(\"dpr\")) { var q = parseFloat(p.get(\"dpr\")); if (isFinite(q)) { s = q; } }"
+			+ " } catch (e) { s = 1.0; }"
+			+ " if (!isFinite(s) || s <= 0.0) { return 1.0; }"
+			+ " return Math.max(0.5, Math.min(2.0, s));")
+	private static native double getRenderResolutionScaleTeaVM();
+
 	public static void update() {
 		update(0);
 	}
@@ -1317,6 +1351,10 @@ public class PlatformInput {
 		int previousHeight = windowHeight;
 		double r = getDevicePixelRatio(win);
 		if(r < 0.01) r = 1.0;
+		double renderScale = renderResolutionScale();
+		if(renderScale != 1.0) {
+			r *= renderScale;
+		}
 		windowDPI = (float)r;
 		int w = parent.getClientWidth();
 		int h = parent.getClientHeight();

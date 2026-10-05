@@ -1045,7 +1045,8 @@ public class PlatformWebRTC {
 	 *  own relay-configured server list and is not affected by this. */
 	private static final String DIRECT_ICE_SERVERS = "[{\"urls\":\"stun:stun.l.google.com:19302\"},"
 			+ "{\"urls\":\"stun:stun1.l.google.com:19302\"},"
-			+ "{\"urls\":\"stun:stun.services.mozilla.com:3478\"}]";
+			+ "{\"urls\":\"stun:stun.services.mozilla.com:3478\"},"
+			+ "{\"urls\":\"stun:global.stun.twilio.com:3478\"}]";
 
 	/** One RTCDataChannel send() is one SCTP message and every browser caps its
 	 *  size: Chrome rejects messages over 256 KiB by throwing, Safari caps them

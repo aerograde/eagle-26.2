@@ -124,7 +124,12 @@ public class Options {
          : genericValueLabel(caption, Component.translatable("options.framerate", value)),
       new OptionInstance.IntRange(1, 26).xmap(value -> value * 10, value -> value / 10, true),
       Codec.intRange(10, 260),
-      120,
+      // Eagler (web): default to the slider maximum so the browser loop is never
+      // throttled below the display refresh (rAF still paces to the display) and
+      // VSync-off play can run uncapped. Desktop keeps the vanilla default of 120.
+      net.lax1dude.eaglercraft.v1_8.minecraft.EaglerHosted.webGpuBackendFactory != null
+         ? UNLIMITED_FRAMERATE_CUTOFF
+         : 120,
       value -> Minecraft.getInstance().getFramerateLimitTracker().setFramerateLimit(value)
    );
    private PreferredGraphicsApi preferredGraphicsBackendFromStartup = PreferredGraphicsApi.DEFAULT;
