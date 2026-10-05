@@ -159,7 +159,7 @@ public class ConnectScreen extends Screen {
                   WebSocketPacketBridge bridge;
                   if (directConnectLAN) {
                      // Attach to the already-open direct connect data channel.
-                     bridge = WebSocketPacketBridge.connect(relayUri, 30000);
+                     bridge = WebSocketPacketBridge.connectDirectLAN(relayUri, 30000);
                   } else if (legacyLAN) {
 	                     // These virtual URIs open the Eagler 1.8 WebRTC data-channel
 	                     // client. Never wrap them as Java TCP targets on /minecraft.

@@ -107,6 +107,12 @@ public class PlatformWebRTC {
 	@JSBody(params = { "item" }, script = "var n = Number(item && item.bufferedAmount) || 0; return n >= 2147483647 ? 2147483647 : (n | 0);")
 	static native int getBufferedAmount(JSObject item);
 
+	/** The browser's advertised SCTP max-message-size, or 0 when the engine does
+	 *  not expose it (or has not built its SCTP transport yet). Used to clamp the
+	 *  send fragment size on engines with a smaller limit than the default. */
+	@JSBody(params = { "connection" }, script = "try { var t = connection && connection.sctp; var n = t && Number(t.maxMessageSize); return (isFinite(n) && n > 0) ? Math.min(2147483647, Math.floor(n)) : 0; } catch (e) { return 0; }")
+	static native int getSctpMaxMessageSize(JSObject connection);
+
 	@JSBody(params = { "item" }, script = "return !!item.candidate;")
 	static native boolean hasCandidate(JSObject item);
 
@@ -1041,6 +1047,19 @@ public class PlatformWebRTC {
 			+ "{\"urls\":\"stun:stun1.l.google.com:19302\"},"
 			+ "{\"urls\":\"stun:stun.services.mozilla.com:3478\"}]";
 
+	/** One RTCDataChannel send() is one SCTP message and every browser caps its
+	 *  size: Chrome rejects messages over 256 KiB by throwing, Safari caps them
+	 *  at 64 KiB. The worker can drain up to 1 MiB of bytes per burst
+	 *  ({@code WorkerPacketBridge.MAX_RAW_DRAIN_BYTES}), so a whole-world burst
+	 *  would otherwise be rejected and (through the catch below) tear the guest
+	 *  link down the moment the world starts streaming. Split every outbound
+	 *  burst to a size that fits even Safari's limit; both peers treat the data
+	 *  channel as an unframed byte stream, so the receiver re-joins the fragments
+	 *  transparently. Engines that expose {@code pc.sctp.maxMessageSize} are
+	 *  additionally clamped below it per link, so a future engine with a smaller
+	 *  limit still transmits safely. */
+	private static final int DIRECT_SEND_FRAGMENT_BYTES = 60 * 1024;
+
 	/** Lifecycle of one room peer; drained by the client platform so the
 	 *  integrated server's LAN peer map tracks the WebRTC links. */
 	public static final class DirectRoomEvent {
@@ -1072,6 +1091,7 @@ public class PlatformWebRTC {
 		private String candidatesJSON = null;
 		private final List<Map<String, String>> iceCandidates = new ArrayList<>();
 		private final int[] candidateState = new int[2];
+		private int fragmentBytes = 0;
 
 		DirectPeer(DirectRoom room, String peerId, boolean host) {
 			this.room = room;
@@ -1148,15 +1168,48 @@ public class PlatformWebRTC {
 			}catch(Throwable t) {
 				throw new IllegalStateException("WebRTC rejected the answer code", t);
 			}
+		}		/** Largest safe single SCTP message for this link: the 60 KiB default,
+		 *  clamped below the browser's advertised max-message-size when known.
+		 *  Computed once per link (the value is stable for a peer connection). */
+		private int fragmentBytes() {
+			int cached = fragmentBytes;
+			if(cached != 0) {
+				return cached;
+			}
+			int cap = DIRECT_SEND_FRAGMENT_BYTES;
+			int max = getSctpMaxMessageSize(peerConnection);
+			if(max > 0) {
+				int usable = max - 1024;
+				if(usable < 4096) {
+					usable = 4096;
+				}
+				if(usable < cap) {
+					cap = usable;
+				}
+			}
+			fragmentBytes = cap;
+			return cap;
 		}
 
 		boolean send(byte[] data) {
 			JSObject channel = dataChannel;
 			if(channel != null && !closed && "open".equals(getReadyState(channel)) && data != null) {
 				try {
-					sendIt(channel, TeaVMUtils.unwrapArrayBuffer(data));
+					int fragmentSize = fragmentBytes();
+					if(data.length <= fragmentSize) {
+						sendIt(channel, TeaVMUtils.unwrapArrayBuffer(data));
+					}else{
+						for(int offset = 0; offset < data.length; offset += fragmentSize) {
+							int length = Math.min(fragmentSize, data.length - offset);
+							byte[] fragment = new byte[length];
+							System.arraycopy(data, offset, fragment, 0, length);
+							sendIt(channel, TeaVMUtils.unwrapArrayBuffer(fragment));
+						}
+					}
 					return true;
 				}catch(Throwable e) {
+					logger.error("Direct connect: failed to send {} bytes to {}; closing the guest link",
+							data.length, peerId, e);
 					room.onPeerClosed(this);
 				}
 			}
@@ -1243,8 +1296,18 @@ public class PlatformWebRTC {
 			listen(connection, "connectionstatechange", evt -> {
 				if(!isActive(connection)) return;
 				String state = getConnectionState(connection);
-				if("failed".equals(state) || "closed".equals(state)
-						|| (!host && "disconnected".equals(state))) {
+				if("failed".equals(state) || "closed".equals(state)) {
+					room.onPeerClosed(this);
+				}else if(!host && "disconnected".equals(state) && !channelOpen) {
+					// A guest that has not opened its channel yet must fail fast: the
+					// join screen polls directGuestLinkDead() while it waits for the
+					// channel and would otherwise hang until the login timeout. Once
+					// the channel is up an ICE "disconnected" is normally transient
+					// (a NAT rebind, a Wi-Fi blip, a mobile handover); Chrome promotes
+					// an unrecoverable path to "failed" a few seconds later, which
+					// still tears the link down. Treating every blip as fatal here
+					// used to drop a healthy session, while the host already ignored
+					// "disconnected" for its own guest links.
 					room.onPeerClosed(this);
 				}
 			});
@@ -1381,6 +1444,19 @@ public class PlatformWebRTC {
 			return peer != null ? peer.bufferedAmount() : 0;
 		}
 
+		/** Host: drop one guest link, used when that guest stops draining its
+		 *  channel. Only the stalled guest is closed; the room and every other
+		 *  guest link stay up. */
+		public boolean closeGuest(String peerId, String reason) {
+			DirectPeer peer = guests.get(peerId);
+			if(peer == null) {
+				return false;
+			}
+			logger.warn("Direct connect: closing guest {} ({})", peerId, reason);
+			onPeerClosed(peer);
+			return true;
+		}
+
 		// ---- guest side ------------------------------------------------
 
 		/** Consume an offer code and return the answer code for the host. */
@@ -1419,6 +1495,12 @@ public class PlatformWebRTC {
 		public int guestBufferedAmount() {
 			DirectPeer peer = guestPeer;
 			return peer != null ? peer.bufferedAmount() : 0;
+		}
+
+		/** Guest: the fragment size the local link negotiated (or the default). */
+		public int guestFragmentBytes() {
+			DirectPeer peer = guestPeer;
+			return peer != null ? peer.fragmentBytes() : DIRECT_SEND_FRAGMENT_BYTES;
 		}
 
 		public int pendingPackets() {
@@ -1582,6 +1664,14 @@ public class PlatformWebRTC {
 
 	public static int directRoomGuestBufferedAmount(String peerId) {
 		return directRoom != null ? directRoom.guestBufferedAmount(peerId) : 0;
+	}
+
+	public static int directGuestFragmentBytes() {
+		return directRoom != null ? directRoom.guestFragmentBytes() : DIRECT_SEND_FRAGMENT_BYTES;
+	}
+
+	public static boolean directRoomDropGuest(String peerId, String reason) {
+		return directRoom != null && directRoom.closeGuest(peerId, reason);
 	}
 
 	public static DirectRoomEvent directRoomPollEvent() {

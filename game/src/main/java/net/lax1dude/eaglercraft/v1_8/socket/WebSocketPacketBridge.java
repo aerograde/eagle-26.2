@@ -44,6 +44,7 @@ public final class WebSocketPacketBridge {
 	private final Connection connection;
 	private final boolean eaglerFrames;
 	private final boolean directTCP;
+	private final boolean directConnect;
 	private final EaglerXHandshake.Result eaglerProfile;
 	private boolean closed;
 	private boolean receivedEaglerMinecraftFrame;
@@ -69,12 +70,13 @@ public final class WebSocketPacketBridge {
 	private int transportBufferedAmountMax;
 
 	private WebSocketPacketBridge(IWebSocketClient socket, EmbeddedChannel channel, Connection connection,
-			boolean eaglerFrames, boolean directTCP, EaglerXHandshake.Result eaglerProfile) {
+			boolean eaglerFrames, boolean directTCP, boolean directConnect, EaglerXHandshake.Result eaglerProfile) {
 		this.socket = socket;
 		this.channel = channel;
 		this.connection = connection;
 		this.eaglerFrames = eaglerFrames;
 		this.directTCP = directTCP;
+		this.directConnect = directConnect;
 		this.eaglerProfile = eaglerProfile;
 		this.transportWindowStarted = EagRuntime.steadyTimeMillis();
 		// A direct Eagler WebSocket is packet framed, just like the 1.8 client. Send
@@ -93,7 +95,14 @@ public final class WebSocketPacketBridge {
 	}
 
 	public static WebSocketPacketBridge connect(String uri, int timeoutMillis) {
-		return connect(uri, timeoutMillis, null);
+		return connect(uri, timeoutMillis, null, false);
+	}
+
+	/** Direct connect: attach to the already-established WebRTC data channel
+	 *  behind an {@code eagler-direct:} URI. Nothing about this session is a
+	 *  relay, so its status messages must not be reported as "relay WebSocket". */
+	public static WebSocketPacketBridge connectDirectLAN(String uri, int timeoutMillis) {
+		return connect(uri, timeoutMillis, null, true);
 	}
 
 	public static WebSocketPacketBridge connectEaglerX(String uri, int timeoutMillis, String username) {
@@ -123,10 +132,14 @@ public final class WebSocketPacketBridge {
 	}
 
 	public static WebSocketPacketBridge connectDirectTCP(String host, int port, int timeoutMillis) {
-		return connectSocket(PlatformNetworking.openDirectTCP(host, port), timeoutMillis, null, true);
+		return connectSocket(PlatformNetworking.openDirectTCP(host, port), timeoutMillis, null, true, false);
 	}
 
 	private static WebSocketPacketBridge connect(String uri, int timeoutMillis, String eaglerUsername) {
+		return connect(uri, timeoutMillis, eaglerUsername, false);
+	}
+
+	private static WebSocketPacketBridge connect(String uri, int timeoutMillis, String eaglerUsername, boolean directConnect) {
 		if (AddressResolver.isWispURI(uri)) {
 			if (eaglerUsername != null) throw new IllegalArgumentException("Wisp uses Java server protocol");
 			net.minecraft.client.multiplayer.resolver.ServerAddress target =
@@ -137,23 +150,25 @@ public final class WebSocketPacketBridge {
 					"Could not open Wisp relay").getString());
 			try {
 				return connectSocket(new WispSocketClient(uri, relay, target.getHost(), target.getPort()),
-					timeoutMillis, null, false);
+					timeoutMillis, null, false, false);
 			} catch (RuntimeException | Error failure) {
 				relay.close();
 				throw failure;
 			}
 		}
-		return connectSocket(PlatformNetworking.openWebSocket(uri), timeoutMillis, eaglerUsername, false);
+		return connectSocket(PlatformNetworking.openWebSocket(uri), timeoutMillis, eaglerUsername, false, directConnect);
 	}
 
 	private static WebSocketPacketBridge connectSocket(IWebSocketClient socket, int timeoutMillis,
-			String eaglerUsername, boolean directTCP) {
+			String eaglerUsername, boolean directTCP, boolean directConnect) {
 		if (socket == null || !socket.connectBlocking(timeoutMillis)) {
 			String detail = socket != null ? socketCloseDetail(socket) : null;
 			if (socket != null) {
 				socket.close();
 			}
-			String base = (directTCP ? Component.translatableWithFallback("multiplayer.connection.directTcpFailed", "Could not connect directly to Minecraft server") : eaglerUsername != null
+			String base = (directTCP ? Component.translatableWithFallback("multiplayer.connection.directTcpFailed", "Could not connect directly to Minecraft server") : directConnect
+				? Component.translatableWithFallback("multiplayer.connection.directConnectFailed", "Could not attach to the direct connect link")
+				: eaglerUsername != null
 				? Component.translatableWithFallback("multiplayer.connection.eaglerWebSocketFailed", "Could not connect to direct EaglerX WebSocket")
 				: Component.translatableWithFallback("multiplayer.connection.relayWebSocketFailed", "Could not connect to relay WebSocket")).getString();
 			throw new IllegalStateException(detail == null ? base : base + ": " + detail);
@@ -173,7 +188,7 @@ public final class WebSocketPacketBridge {
 					connection.configurePacketHandler(pipeline);
 				}
 			});
-			return new WebSocketPacketBridge(socket, channel, connection, eaglerFrames, directTCP, eaglerProfile);
+			return new WebSocketPacketBridge(socket, channel, connection, eaglerFrames, directTCP, directConnect, eaglerProfile);
 		} catch (RuntimeException | Error failure) {
 			try {
 				socket.close();
@@ -378,9 +393,11 @@ public final class WebSocketPacketBridge {
 		if (detail != null && connection.isConnected()) {
 			connection.disconnect(directTCP
 					? Component.translatableWithFallback("multiplayer.connection.directTcpClosed", "Direct TCP connection closed: %s", detail)
-					: eaglerFrames
-						? Component.translatableWithFallback("multiplayer.connection.eaglerWebSocketClosed", "Eagler WebSocket disconnected: %s", detail)
-						: Component.translatableWithFallback("multiplayer.connection.relayWebSocketClosed", "Relay WebSocket disconnected: %s", detail));
+					: directConnect
+						? Component.translatableWithFallback("multiplayer.connection.directConnectClosed", "Direct connect link lost: %s", detail)
+						: eaglerFrames
+							? Component.translatableWithFallback("multiplayer.connection.eaglerWebSocketClosed", "Eagler WebSocket disconnected: %s", detail)
+							: Component.translatableWithFallback("multiplayer.connection.relayWebSocketClosed", "Relay WebSocket disconnected: %s", detail));
 		} else {
 			close();
 		}
@@ -391,9 +408,8 @@ public final class WebSocketPacketBridge {
 			return;
 		}
 		long currentGapMillis = transportLastInboundMillis < 0L ? -1L
-				: Math.max(0L, now - transportLastInboundMillis);
-		LOGGER.info("[EagPerfClient] transport type={} recv={}/{}B sent={}/{}B queueMax={} queueEndMax={} pumps/empty/backlog={}/{}/{} pumpMax={}ms/{}frames limits budget/frame={}/{} arrivalGap current/max={}/{}ms gaps>100/500/1000={}/{}/{} bufferedOutMax={}B",
-				directTCP ? "direct-tcp" : eaglerFrames ? "eaglerx" : "relay", transportInboundFrames, transportInboundBytes,
+				: Math.max(0L, now - transportLastInboundMillis);			LOGGER.info("[EagPerfClient] transport type={} recv={}/{}B sent={}/{}B queueMax={} queueEndMax={} pumps/empty/backlog={}/{}/{} pumpMax={}ms/{}frames limits budget/frame={}/{} arrivalGap current/max={}/{}ms gaps>100/500/1000={}/{}/{} bufferedOutMax={}B",
+				directTCP ? "direct-tcp" : directConnect ? "direct-connect" : eaglerFrames ? "eaglerx" : "relay", transportInboundFrames, transportInboundBytes,
 				transportOutboundFrames, transportOutboundBytes, transportQueueMax, transportQueueEndMax,
 				transportPumps, transportEmptyPumps, transportBacklogPumps, transportPumpMaxMillis,
 				transportPumpMaxFrames, transportPumpBudgetHits, transportPumpFrameLimitHits,

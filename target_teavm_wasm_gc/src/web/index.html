@@ -366,6 +366,241 @@
 			});
 		})();
 
+		// Clipboard resilience. Host pages can run this client inside a frame
+		// (loader SVGs, embedded players, cross-origin embeds) where
+		// navigator.clipboard.writeText() rejects or never settles and readText()
+		// may hang forever. The game copies codes fire-and-forget, so a blocked
+		// copy used to fail silently and the direct-connect invite/answer exchange
+		// could never complete. Normalize both directions here: try the legacy
+		// selection copy first (it keeps working across frame permission policies),
+		// fall back to a selectable overlay that needs no modal permission, and
+		// bound readText() so a stalled clipboard cannot freeze the paste button.
+		(function () {
+			if (window.__eaglerClipboardShim) return;
+			window.__eaglerClipboardShim = true;
+			var WRITE_TIMEOUT_MS = 1500;
+			var READ_TIMEOUT_MS = 1500;
+			var realClipboard = null;
+			try { realClipboard = navigator.clipboard || null; } catch (e) { realClipboard = null; }
+			var realWrite = null, realRead = null;
+			try { if (realClipboard && typeof realClipboard.writeText === "function") realWrite = realClipboard.writeText.bind(realClipboard); } catch (e) {}
+			try { if (realClipboard && typeof realClipboard.readText === "function") realRead = realClipboard.readText.bind(realClipboard); } catch (e) {}
+			function note(message) {
+				try { console.warn("[shell] clipboard: " + message); } catch (e) {}
+			}
+			// Synchronous legacy path. document.execCommand("copy") is not gated by
+			// the async clipboard permission, so it still works inside cross-origin
+			// frames while the click gesture that requested the copy is active.
+			function legacyCopy(text) {
+				try {
+					if (!document.body || typeof document.execCommand !== "function") return false;
+					var area = document.createElement("textarea");
+					area.value = text;
+					area.setAttribute("readonly", "readonly");
+					area.style.cssText = "position:fixed;top:0;left:-9999px;opacity:0;";
+					var selection = null;
+					var saved = null;
+					try {
+						selection = document.getSelection ? document.getSelection() : null;
+						if (selection && selection.rangeCount > 0) saved = selection.getRangeAt(0);
+					} catch (e) { saved = null; }
+					document.body.appendChild(area);
+					var ok = false;
+					try {
+						area.focus({ preventScroll: true });
+						area.select();
+						ok = document.execCommand("copy");
+					} catch (e) { ok = false; }
+					if (area.parentNode) area.parentNode.removeChild(area);
+					try { if (selection) { selection.removeAllRanges(); if (saved) selection.addRange(saved); } } catch (e) {}
+					return ok === true;
+				} catch (e) {
+					return false;
+				}
+			}
+			// Modal-free overlay: window.prompt() is unavailable when the host page
+			// sandboxes modals away, but a plain textarea still works. The manual
+			// copy value starts selected, so Ctrl/Cmd+C is enough to copy it.
+			function clipboardPanel(options) {
+				var previous = document.getElementById("eagler_clipboard_panel");
+				if (previous && previous.parentNode) previous.parentNode.removeChild(previous);
+				var panel = document.createElement("div");
+				panel.id = "eagler_clipboard_panel";
+				panel.style.cssText = "position:fixed;z-index:2147483647;inset:0;background:rgba(0,0,0,0.55);display:flex;"
+					+ "align-items:center;justify-content:center;padding:24px;box-sizing:border-box;font:14px/1.5 sans-serif;";
+				var card = document.createElement("div");
+				card.style.cssText = "background:#1d1d1d;color:#fff;border:1px solid #777;border-radius:6px;"
+					+ "padding:18px;max-width:640px;width:100%;box-shadow:0 10px 30px rgba(0,0,0,0.5);";
+				var heading = document.createElement("div");
+				heading.textContent = options.title;
+				heading.style.cssText = "font-size:16px;font-weight:600;margin-bottom:8px;";
+				var hint = document.createElement("div");
+				hint.textContent = options.hint;
+				hint.style.cssText = "margin-bottom:10px;color:#ddd;";
+				var area = document.createElement("textarea");
+				area.value = options.text || "";
+				if (!options.paste) area.setAttribute("readonly", "readonly");
+				area.style.cssText = "width:100%;height:64px;box-sizing:border-box;font:12px/1.4 ui-monospace,monospace;"
+					+ "background:#111;color:#fff;border:1px solid #555;border-radius:4px;padding:8px;resize:none;";
+				var row = document.createElement("div");
+				row.style.cssText = "margin-top:12px;display:flex;gap:10px;justify-content:flex-end;";
+				var settled = false;
+				function close(result) {
+					if (settled) return;
+					settled = true;
+					try { if (panel.parentNode) panel.parentNode.removeChild(panel); } catch (e) {}
+					if (options.done) options.done(result);
+				}
+				function button(label, primary, action) {
+					var b = document.createElement("button");
+					b.textContent = label;
+					b.style.cssText = "padding:8px 14px;border-radius:4px;border:1px solid #777;cursor:pointer;font:inherit;"
+						+ (primary ? "background:#4c8bf5;color:#fff;border-color:#4c8bf5;" : "background:#333;color:#eee;");
+					b.onclick = action;
+					row.appendChild(b);
+				}
+				if (options.paste) {
+					button("Use this code", true, function () { close(area.value.replace(/\s+/g, "")); });
+					button("Cancel", false, function () { close(null); });
+				} else {
+					button("Copy", true, function () {
+						if (legacyCopy(area.value)) close(true);
+						else { area.focus(); area.select(); }
+					});
+					button("Close", false, function () { close(false); });
+				}
+				// Do not let typed/pasted keys reach the game's hotkey handlers.
+				["keydown", "keyup", "keypress"].forEach(function (type) {
+					area.addEventListener(type, function (event) {
+						if (event.key === "Escape") { close(options.paste ? null : false); return; }
+						try { event.stopPropagation(); } catch (e) {}
+					});
+				});
+				card.appendChild(heading);
+				card.appendChild(hint);
+				card.appendChild(area);
+				card.appendChild(row);
+				panel.appendChild(card);
+				(document.body || document.documentElement).appendChild(panel);
+				try { area.focus(); area.select(); } catch (e) {}
+				return panel;
+			}
+			function showCopyPanel(text, resolve) {
+				clipboardPanel({
+					title: "Automatic copy was blocked here",
+					hint: "The code below is already selected. Press Ctrl+C (Cmd+C on macOS) to copy it, then send it to your friend.",
+					text: text,
+					paste: false,
+					done: function () { resolve(false); }
+				});
+			}
+			function showPastePanel(resolve, isSettled) {
+				function show() {
+					if (isSettled()) return;
+					clipboardPanel({
+						title: "Automatic paste was blocked here",
+						hint: "Click in the box below, press Ctrl+V (Cmd+V on macOS) to paste the code, then press Use this code.",
+						text: "",
+						paste: true,
+						done: function (text) { resolve(text == null ? null : String(text)); }
+					});
+				}
+				// A pending browser permission prompt keeps readText() unresolved for as
+				// long as the user needs to answer it; only treat it as a stall after
+				// the browser itself reports the permission as blocked.
+				try {
+					if (navigator.permissions && navigator.permissions.query) {
+						navigator.permissions.query({ name: "clipboard-read" }).then(function (status) {
+							if (status && status.state === "prompt") setTimeout(show, 10000);
+							else show();
+						}, show);
+						return;
+					}
+				} catch (e) {}
+				show();
+			}
+			function writeClipboard(text) {
+				var value = text == null ? "" : String(text);
+				if (legacyCopy(value)) return Promise.resolve(true);
+				if (!realWrite) {
+					note("writeText unavailable; showing the manual copy panel");
+					return new Promise(function (resolve) { showCopyPanel(value, resolve); });
+				}
+				return new Promise(function (resolve) {
+					var settled = false;
+					var timer = setTimeout(function () {
+						if (settled) return;
+						settled = true;
+						note("writeText did not settle; showing the manual copy panel");
+						showCopyPanel(value, resolve);
+					}, WRITE_TIMEOUT_MS);
+					try {
+						realWrite(value).then(function () {
+							if (settled) return;
+							settled = true;
+							clearTimeout(timer);
+							resolve(true);
+						}, function (error) {
+							if (settled) return;
+							settled = true;
+							clearTimeout(timer);
+							note("writeText was blocked (" + ((error && (error.name || error.message)) || error) + "); showing the manual copy panel");
+							showCopyPanel(value, resolve);
+						});
+					} catch (error) {
+						if (settled) return;
+						settled = true;
+						clearTimeout(timer);
+						note("writeText threw (" + error + "); showing the manual copy panel");
+						showCopyPanel(value, resolve);
+					}
+				});
+			}
+			function readClipboard() {
+				if (!realRead) {
+					note("readText unavailable; showing the manual paste panel");
+					return new Promise(function (resolve) { showPastePanel(resolve, function () { return false; }); });
+				}
+				return new Promise(function (resolve) {
+					var settled = false;
+					var finalize = function (value) {
+						if (settled) return;
+						settled = true;
+						clearTimeout(timer);
+						resolve(value);
+					};
+					var timer = setTimeout(function () {
+						if (settled) return;
+						note("readText did not settle; waiting for the clipboard permission state");
+						showPastePanel(finalize, function () { return settled; });
+					}, READ_TIMEOUT_MS);
+					try {
+						realRead().then(function (value) {
+							finalize(typeof value === "string" ? value : null);
+						}, function (error) {
+							note("readText was blocked (" + ((error && (error.name || error.message)) || error) + "); showing the manual paste panel");
+							showPastePanel(finalize, function () { return settled; });
+						});
+					} catch (error) {
+						note("readText threw (" + error + "); showing the manual paste panel");
+						showPastePanel(finalize, function () { return settled; });
+					}
+				});
+			}
+			try {
+				var target = realClipboard;
+				if (!target) {
+					target = {};
+					Object.defineProperty(navigator, "clipboard", { value: target, configurable: true });
+				}
+				Object.defineProperty(target, "writeText", { value: writeClipboard, configurable: true, writable: true });
+				Object.defineProperty(target, "readText", { value: readClipboard, configurable: true, writable: true });
+				note("shim installed");
+			} catch (e) {
+				note("shim could not be installed: " + e);
+			}
+		})();
+
 		// TeaVM may construct WeakReference(null), which native WeakRef rejects.
 		(function () {
 			var RealWeakRef = window.WeakRef;

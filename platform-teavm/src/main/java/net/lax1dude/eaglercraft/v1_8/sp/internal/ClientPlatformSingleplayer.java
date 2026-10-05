@@ -270,7 +270,8 @@ public class ClientPlatformSingleplayer {
 	}
 
 	/** Host: turn the room's peer lifecycle into the worker's ~!LAN peer map
-	 *  commands, one entry per guest link. */
+	 *  commands, one entry per guest link, and release guests whose channel has
+	 *  drained again. */
 	private static void updateDirectConnect() {
 		if(directMode != 1) {
 			return;
@@ -284,6 +285,15 @@ public class ClientPlatformSingleplayer {
 				logger.info("Direct connect guest {} joined (no relay involved)", event.peerId);
 			}else {
 				logger.info("Direct connect guest {} left", event.peerId);
+			}
+		}
+		if(!lanRelayPausedPeers.isEmpty()) {
+			for(String peer : new java.util.ArrayList<>(lanRelayPausedPeers)) {
+				if(PlatformWebRTC.directRoomGuestBufferedAmount(peer) <= LAN_RELAY_RESUME_BYTES) {
+					sendDataBatch(ServerWorkerProtocol.LAN_CONTROL_CHANNEL,
+							("resume:" + peer).getBytes(StandardCharsets.UTF_8));
+					lanRelayPausedPeers.remove(peer);
+				}
 			}
 		}
 	}
@@ -687,8 +697,26 @@ public class ClientPlatformSingleplayer {
 			if(channel.startsWith(ServerWorkerProtocol.LAN_DATA_PREFIX)) {
 				String lanPeer = channel.substring(ServerWorkerProtocol.LAN_DATA_PREFIX.length());
 				if(directMode == 1) {
-					// One worker peer id per guest link, no relay socket involved.
-					PlatformWebRTC.directRoomSendToGuest(lanPeer, new Int8Array(buf).copyToJavaArray());
+					// One worker peer id per guest link, no relay socket involved. The
+					// guest's data channel is the upload queue, so it gets the same
+					// pause/stall policy the relay socket has: a guest that stops
+					// reading must not grow the page without bound, and the worker
+					// holds the packets while a guest is paused.
+					byte[] payload = new Int8Array(buf).copyToJavaArray();
+					int buffered = PlatformWebRTC.directRoomGuestBufferedAmount(lanPeer);
+					if(buffered >= LAN_RELAY_ABORT_BYTES) {
+						lanRelayPausedPeers.remove(lanPeer);
+						PlatformWebRTC.directRoomDropGuest(lanPeer, "the guest stopped reading ("
+								+ (buffered / (1024 * 1024)) + " MiB queued in its data channel)");
+						return;
+					}
+					if(buffered >= LAN_RELAY_PAUSE_BYTES && lanRelayPausedPeers.add(lanPeer)) {
+						sendDataBatch(ServerWorkerProtocol.LAN_CONTROL_CHANNEL,
+								("pause:" + lanPeer).getBytes(StandardCharsets.UTF_8));
+						logger.warn("Pausing direct connect guest {} at {} MiB channel backlog", lanPeer,
+								buffered / (1024 * 1024));
+					}
+					PlatformWebRTC.directRoomSendToGuest(lanPeer, payload);
 					return;
 				}
 				sendLANRelayPeer(lanPeer, new Int8Array(buf).copyToJavaArray());

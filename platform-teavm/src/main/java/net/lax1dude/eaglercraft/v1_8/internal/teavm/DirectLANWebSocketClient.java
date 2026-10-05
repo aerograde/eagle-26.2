@@ -20,7 +20,6 @@ import net.lax1dude.eaglercraft.v1_8.internal.PlatformWebRTC;
 public final class DirectLANWebSocketClient extends AbstractWebSocketClient {
 
 	public static final String URI_PREFIX = "eagler-direct:";
-	private static final int DATA_FRAGMENT_BYTES = 60 * 1024;
 	private static final int MAX_PUMP_PACKETS = 16;
 	private static final int MAX_PUMP_BYTES = 1024 * 1024;
 
@@ -114,6 +113,13 @@ public final class DirectLANWebSocketClient extends AbstractWebSocketClient {
 	@Override public int getCloseCode() { return closeCode; }
 	@Override public String getCloseReason() { return closeReason; }
 
+	/** Bytes handed to the data channel that the browser has not flushed yet, so
+	 *  the client pump can back off instead of growing the channel queue. */
+	@Override
+	public int getBufferedAmount() {
+		return PlatformWebRTC.directGuestBufferedAmount();
+	}
+
 	@Override
 	public void close() {
 		connecting = false;
@@ -122,18 +128,22 @@ public final class DirectLANWebSocketClient extends AbstractWebSocketClient {
 		PlatformWebRTC.directGuestClose();
 	}
 
-	@Override public void send(String str) { throw new UnsupportedOperationException("Direct connect is binary only"); }
-
-	@Override
+	@Override public void send(String str) { throw new UnsupportedOperationException("Direct connect is binary only"); }	@Override
 	public void send(byte[] bytes) {
 		if(!connected || bytes == null) {
 			return;
 		}
-		for(int offset = 0; offset < bytes.length; offset += DATA_FRAGMENT_BYTES) {
-			int length = Math.min(DATA_FRAGMENT_BYTES, bytes.length - offset);
+		// The platform owns the safe SCTP message size: 60 KiB by default,
+		// clamped below the browser's advertised limit when it exposes one.
+		int fragmentBytes = PlatformWebRTC.directGuestFragmentBytes();
+		if(fragmentBytes < 4096) {
+			fragmentBytes = 4096;
+		}
+		for(int offset = 0; offset < bytes.length; offset += fragmentBytes) {
+			int length = Math.min(fragmentBytes, bytes.length - offset);
 			if(offset == 0 && length == bytes.length) {
 				PlatformWebRTC.directGuestSendPacket(bytes);
-			}else {
+			}else{
 				byte[] fragment = new byte[length];
 				System.arraycopy(bytes, offset, fragment, 0, length);
 				PlatformWebRTC.directGuestSendPacket(fragment);
