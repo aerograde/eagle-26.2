@@ -335,6 +335,9 @@ if (iwaBundleURL) {
 }
 const runtimeJs = read("classes.wasm-runtime.js").toString("utf8");
 const workerJs = read("worker-bootstrap.js").toString("utf8");
+// Boot-time same-network discovery module (optional at runtime: it parks
+// itself when the serving origin has no /eagler-lan/v1 discovery service).
+const discoveryJs = read("lan-discovery.js").toString("utf8");
 const wasm = read("classes.wasm");
 const meshWasm = read("mesh-worker.wasm");
 // The slim Wasm-GC client intentionally excludes IntegratedServer. A matching
@@ -380,6 +383,15 @@ html = html.replace(
   /<script type="text\/javascript" src="worker-bootstrap\.js(?:\?v=[^"]+)?"><\/script>/,
   `<script type="text/javascript">\n${workerJs}\n</script>`
 );
+// Inlined AFTER the worker bootstrap on purpose: the single-file build installs
+// its inline-payload fetch shim there, and the discovery module uses fetch.
+html = html.replace(
+  /<script type="text\/javascript" src="lan-discovery\.js(?:\?v=[^"]+)?"><\/script>/,
+  `<script type="text/javascript">\n${discoveryJs}\n</script>`
+);
+if (html.indexOf("__eaglerLAN") < 0) {
+  fail("lan-discovery.js did not inline; the shell script tag is missing");
+}
 
 if (withoutMusic) {
   html = html.replace(

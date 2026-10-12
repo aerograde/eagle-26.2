@@ -36,6 +36,8 @@ public class EaglerDirectConnectJoinScreen extends Screen {
 	private final ServerData serverData;
 	private final BooleanConsumer callback;
 	private final String offerCode;
+	/** Non-null when the invite came from the automatic LAN peer list. */
+	private final String lanPeerId;
 
 	private StringWidget statusWidget;
 	private Button copyButton;
@@ -44,14 +46,27 @@ public class EaglerDirectConnectJoinScreen extends Screen {
 	private int state = STATE_GENERATING;
 	private int advanceTimer;
 	private int copyFeedbackTimer = -1;
+	private boolean lanAnswerSent;
 
 	public EaglerDirectConnectJoinScreen(Screen parent, ServerData serverData, BooleanConsumer callback,
 			String offerCode) {
+		this(parent, serverData, callback, offerCode, null);
+	}
+
+	/**
+	 * Automatic LAN invite variant: {@code lanPeerId} is the peer whose invite
+	 * this join came from, so the answer code is returned over that peer's data
+	 * channel instead of being shown for the player to copy. Everything after
+	 * that - the transport, the handshake, the connect - is the same flow.
+	 */
+	public EaglerDirectConnectJoinScreen(Screen parent, ServerData serverData, BooleanConsumer callback,
+			String offerCode, String lanPeerId) {
 		super(Component.translatableWithFallback("direct.join.title", "Join Direct Connect Room"));
 		this.parent = parent;
 		this.serverData = serverData;
 		this.callback = callback;
 		this.offerCode = offerCode;
+		this.lanPeerId = lanPeerId;
 	}
 
 	@Override
@@ -61,7 +76,8 @@ public class EaglerDirectConnectJoinScreen extends Screen {
 				Component.translatableWithFallback("direct.join.creating", "Preparing your answer code..."), this.font));
 		this.setStatus(Component.translatableWithFallback("direct.join.creating", "Preparing your answer code..."));
 		this.copyButton = this.addRenderableWidget(Button.builder(
-				Component.translatableWithFallback("direct.join.copy", "Copy Answer Code"), button -> {
+				Component.translatableWithFallback(this.lanPeerId != null ? "lan.join.copy" : "direct.join.copy",
+						this.lanPeerId != null ? "Copy Answer Code (fallback)" : "Copy Answer Code"), button -> {
 					String code = this.answerCode;
 					if(code != null && !code.isBlank()) {
 						EagRuntime.setClipboard(code);
@@ -113,6 +129,10 @@ public class EaglerDirectConnectJoinScreen extends Screen {
 				if(this.answerCode == null || this.answerCode.isBlank()) {
 					this.state = STATE_FAILED;
 					this.errorText = "Could not create the answer code";
+				}else if(this.lanPeerId != null) {
+					// The host is one data channel away: hand the answer back now.
+					this.lanAnswerSent = net.lax1dude.eaglercraft.v1_8.sp.lan.LANInvites.sendAnswer(this.lanPeerId,
+							this.answerCode);
 				}
 			}catch(Throwable t) {
 				this.state = STATE_FAILED;
@@ -146,8 +166,16 @@ public class EaglerDirectConnectJoinScreen extends Screen {
 		if(this.errorText != null) {
 			this.setStatus(Component.literal(this.errorText).withStyle(ChatFormatting.RED));
 		}else if(this.state == STATE_WAITING) {
-			this.setStatus(Component.translatableWithFallback("direct.join.shareAnswer",
-					"Send this answer code back to the host, then wait here"));
+			if(this.lanPeerId != null) {
+				this.setStatus(this.lanAnswerSent
+						? Component.translatableWithFallback("lan.join.waiting",
+								"Answer sent to the host - waiting for them to accept...")
+						: Component.translatableWithFallback("lan.join.manual",
+								"Could not reach the host directly - send this code back instead"));
+			}else {
+				this.setStatus(Component.translatableWithFallback("direct.join.shareAnswer",
+						"Send this answer code back to the host, then wait here"));
+			}
 		}
 	}
 

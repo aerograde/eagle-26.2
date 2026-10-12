@@ -1267,6 +1267,12 @@ public class Minecraft extends ReentrantBlockableEventLoop<Runnable> implements 
          this.stop();
       }
 
+      // Automatic same-network multiplayer: drain what the discovery module
+      // found while the client was booting and raise any invite the player has
+      // not answered yet. Parked (and therefore free) on a page without the
+      // discovery service.
+      net.lax1dude.eaglercraft.v1_8.sp.lan.LANInvites.tick();
+
       if (this.pendingReload != null && !(this.gui.overlay() instanceof LoadingOverlay)) {
          CompletableFuture<Void> future = this.pendingReload;
          this.pendingReload = null;

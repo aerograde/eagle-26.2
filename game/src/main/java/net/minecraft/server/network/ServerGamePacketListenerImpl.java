@@ -490,7 +490,20 @@ public class ServerGamePacketListenerImpl
             double zDist = targetZ - this.vehicleFirstGoodZ;
             double expectedDist = vehicle.getDeltaMovement().lengthSqr();
             double movedDist = xDist * xDist + yDist * yDist + zDist * zDist;
-            if (movedDist - expectedDist > 100.0 && !this.isSingleplayerOwner()) {
+            // Eagler: a vehicle with a player riding it is client-authoritative here, and
+            // AbstractBoat.tick (and the minecart behaviours) deliberately decline to simulate
+            // that vehicle on the server - its velocity stays zero. Both corrections below were
+            // written for a server-simulated vehicle: expectedDist is meant to be the vehicle's
+            // own velocity, so here it is always 0, and the "moved wrongly" branch snaps the
+            // vehicle back to the server's copy whenever the two sides disagree about collision.
+            // With browser worldgen a cooperative coroutine in the same worker as the integrated
+            // server, that disagreement is routine while the destination neighbourhood is still
+            // generating (the player path above already defers for exactly that reason), so the
+            // owner's boat was being yanked backwards mid-river and then lurched forward once the
+            // chunk landed, ending up wedged in the terrain it had been passing. The owning client
+            // is the only side simulating the vehicle, so trust its reported pose.
+            boolean eaglerAuthoritativeVehicle = vehicle.isClientAuthoritative();
+            if (!eaglerAuthoritativeVehicle && movedDist - expectedDist > 100.0 && !this.isSingleplayerOwner()) {
                LOGGER.warn(
                   "{} (vehicle of {}) moved too quickly! {},{},{}",
                   new Object[]{vehicle.getPlainTextName(), this.player.getPlainTextName(), xDist, yDist, zDist}
@@ -526,7 +539,9 @@ public class ServerGamePacketListenerImpl
                );
             }
 
-            if (fail && level.noCollision(vehicle, oldAABB) || this.isEntityCollidingWithAnythingNew(level, vehicle, oldAABB, targetX, targetY, targetZ)) {
+            if (!eaglerAuthoritativeVehicle
+               && (fail && level.noCollision(vehicle, oldAABB)
+                  || this.isEntityCollidingWithAnythingNew(level, vehicle, oldAABB, targetX, targetY, targetZ))) {
                vehicle.absSnapTo(oldX, oldY, oldZ, targetYRot, targetXRot);
                this.send(ClientboundMoveVehiclePacket.fromEntity(vehicle));
                vehicle.removeLatestMovementRecording();

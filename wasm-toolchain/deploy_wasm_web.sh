@@ -29,6 +29,20 @@ file_size() {
 	wc -c < "$1" | tr -d ' '
 }
 
+# A precompressed sidecar left over from an earlier build is worse than no
+# sidecar: any static host that trusts a `.br` next to a payload (tools/lan-server.mjs
+# does, unless the payload is newer) would serve the PREVIOUS build behind a
+# freshly deployed one - the page loads and runs stale code. Every artifact below
+# is rewritten by this script, so its compressed cache is invalid by construction.
+# Re-create these with `node wasm-toolchain/precompress-web.js` if the bytes matter;
+# correctness never depends on them.
+drop_stale_sidecars() {
+	for base in "$@"; do
+		rm -f "$base.br" "$base.br.meta" "$base.br.sha256" \
+		      "$base.gz" "$base.gz.meta" "$base.gz.sha256"
+	done
+}
+
 if [ ! -s "$RUNTIME_SRC" ]; then
 	echo "[deploy_wasm_web] ERROR: missing authenticated TeaVM 0.13.1 client runtime: $RUNTIME_SRC" >&2
 	exit 1
@@ -42,6 +56,10 @@ mkdir -p "$WEB" "$WEB/lang"
 #    — server worker + mesh pool — is spawned from)
 cp "$SRC/index.html" "$WEB/index.html"
 cp "$SRC/worker-bootstrap.js" "$WEB/worker-bootstrap.js"
+# Automatic same-network peer discovery: boot-time module, loaded by the shell
+# before the client Wasm compiles. Optional at runtime (parks itself when the
+# origin has no /eagler-lan/v1 service).
+cp "$SRC/lan-discovery.js" "$WEB/lan-discovery.js"
 cp "$REPO/game/src/main/resources/pack.png" "$WEB/favicon.png"
 
 # 2. wasm binary (symlink -> the freshly generated one; the client emits only classes.wasm)
@@ -72,6 +90,7 @@ BUILD_INPUTS=(
 	"$MESH_GEN/mesh-worker.wasm"
 	"$SRC/index.html"
 	"$SRC/worker-bootstrap.js"
+	"$SRC/lan-discovery.js"
 )
 if [ "$SERVER_WORKER_AVAILABLE" = true ]; then
 	BUILD_INPUTS+=("$SERVER_GEN/server-worker.wasm")
@@ -103,6 +122,13 @@ sed_inplace "s/__EAGLER_ASSET_TOTAL_BYTES__/$ASSET_TOTAL_BYTES/g; s/__EAGLER_ASS
 # 3. generic wasm-gc runtime js installed from the authenticated TeaVM 0.13.1
 #    tool classpath by the standalone client linker. Never preserve a stale web copy.
 cp "$RUNTIME_SRC" "$WEB/classes.wasm-runtime.js"
+
+# Every file above was just rewritten from this build's inputs; drop the sidecars
+# that still describe what used to be here.
+drop_stale_sidecars \
+	"$WEB/index.html" "$WEB/worker-bootstrap.js" "$WEB/lan-discovery.js" \
+	"$WEB/classes.wasm" "$WEB/classes.wasm-runtime.js" "$WEB/mesh-worker.wasm" \
+	"$WEB/server-worker.wasm"
 
 # 4. Base EPKs (symlink -> the JS build's; same assets). Music is distributed
 #    separately as an optional resource pack and must not delay normal startup.

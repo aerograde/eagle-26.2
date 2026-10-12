@@ -695,6 +695,11 @@
 	</script>
 	<script type="text/javascript" src="classes.wasm-runtime.js?v=__EAGLER_BUILD_ID__"></script>
 	<script type="text/javascript" src="worker-bootstrap.js?v=__EAGLER_BUILD_ID__"></script>
+	<!-- Automatic same-network peer discovery. Starts before the Wasm compiles so
+	     the peer links are already open when the game becomes playable. Parks
+	     itself with no side effects when the origin has no discovery service
+	     (tools/lan-server.mjs); the manual join-code flow is unaffected. -->
+	<script type="text/javascript" src="lan-discovery.js?v=__EAGLER_BUILD_ID__"></script>
 	<script type="module">
 		(async () => {
 			try {

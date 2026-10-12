@@ -123,6 +123,14 @@ public class ClientMain {
 				}
 			});
 
+			// ==== automatic same-network discovery (default multiplayer path) ====
+			// The shell already loaded lan-discovery.js before this Wasm compiled, so
+			// by now the peer links to everyone on this network are being opened in
+			// the background. This only subscribes to its event stream and reports
+			// where discovery stands; it never blocks boot and is a no-op when the
+			// page has no discovery service (the manual join-code flow is unchanged).
+			net.lax1dude.eaglercraft.v1_8.lan.LANDiscovery.announceAtBoot();
+
 			JSObject opts = getEaglerXOpts();
 
 			if(opts == null) {

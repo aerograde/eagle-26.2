@@ -39,6 +39,7 @@ public class EaglerDirectConnectHostScreen extends Screen {
 	private EditBox answerBox;
 	private Button completeButton;
 	private Button copyButton;
+	private Button inviteListButton;
 	private boolean published;
 	private String errorText;
 	private int autoCloseTimer = -1;
@@ -98,8 +99,15 @@ public class EaglerDirectConnectHostScreen extends Screen {
 						this.errorText = t.getMessage() != null ? t.getMessage() : t.getClass().getSimpleName();
 					}
 				}).bounds(centerX + 4, this.height / 2 + 30, 148, 20).build());
+		// The automatic path is the one the room is here for: the code band above
+		// is the fallback for a guest the discovery service cannot see.
+		this.inviteListButton = this.addRenderableWidget(Button.builder(
+				Component.translatableWithFallback("lan.host.inviteList", "Nearby Players (%s)", 0),
+				button -> this.minecraft.gui.setScreen(
+						new EaglerLANPeersScreen(this, this.gameMode, this.allowCommands)))
+				.bounds(centerX + 4, this.height / 2 + 92, 148, 20).build());
 		this.addRenderableWidget(Button.builder(Component.translatableWithFallback("direct.host.back", "Back to Game"),
-				button -> this.onClose()).bounds(centerX - 152, this.height / 2 + 92, 304, 20).build());
+				button -> this.onClose()).bounds(centerX - 152, this.height / 2 + 92, 148, 20).build());
 		if(!this.published) {
 			if(SingleplayerServerController26.isDirectConnectHost()) {
 				// Re-opened while the room is still hosting: keep the existing
@@ -219,6 +227,10 @@ public class EaglerDirectConnectHostScreen extends Screen {
 				this.minecraft.gui.setScreen((Screen) null);
 			}
 		}
+		if(this.inviteListButton != null) {
+			this.inviteListButton.setMessage(Component.translatableWithFallback("lan.host.inviteList",
+					"Nearby Players (%s)", net.lax1dude.eaglercraft.v1_8.sp.lan.LANInvites.openPeerCount()));
+		}
 		if(this.copyFeedbackTimer > 0 && --this.copyFeedbackTimer == 0) {
 			this.copyFeedbackTimer = -1;
 			this.updateCopyButton();
@@ -243,6 +255,15 @@ public class EaglerDirectConnectHostScreen extends Screen {
 		if(guests > 0) {
 			graphics.centeredText(this.font, Component.translatableWithFallback("direct.host.roomStatus",
 					"Room: %s invited, %s connected", guests, connected), centerX, 38, 0xFF8FD18F);
+		}else {
+			// Nothing of the room's own to report: say what discovery can see.
+			String lanLine = net.lax1dude.eaglercraft.v1_8.sp.lan.LANInvites.getNotice();
+			if(lanLine == null) {
+				lanLine = net.lax1dude.eaglercraft.v1_8.sp.lan.LANInvites.describeService();
+			}
+			if(lanLine != null) {
+				graphics.centeredText(this.font, Component.literal(lanLine), centerX, 38, 0xFF8FD18F);
+			}
 		}
 		String code = SingleplayerServerController26.getLANRelayCode();
 		if(code != null && !code.isBlank()) {
