@@ -37,6 +37,7 @@
  */
 
 import http from "node:http";
+import os from "node:os";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -573,6 +574,28 @@ async function handleApi(req, res, opts, url) {
 // main
 // --------------------------------------------------------------------------
 
+/**
+ * Origin URLs a player on this network can reach this server at. An explicit
+ * --host is respected as-is; with the default wildcard bind we list every
+ * non-internal IPv4 interface plus loopback.
+ */
+function localUrls(opts) {
+  const urls = [];
+  const explicit = opts.host !== "0.0.0.0" && opts.host !== "::" && opts.host !== "";
+  if (explicit) {
+    urls.push(`http://${opts.host}:${opts.port}`);
+    return urls;
+  }
+  for (const entries of Object.values(os.networkInterfaces())) {
+    for (const entry of entries || []) {
+      if (entry.family !== "IPv4" || entry.internal) continue;
+      urls.push(`http://${entry.address}:${opts.port}`);
+    }
+  }
+  urls.push(`http://127.0.0.1:${opts.port}`);
+  return urls;
+}
+
 function log(message) {
   if (!LOG_OPTS.quiet) {
     const stamp = new Date().toISOString().slice(11, 19);
@@ -623,11 +646,15 @@ async function main() {
   sweeper.unref?.();
 
   server.listen(opts.port, opts.host, () => {
-    const shown = opts.host === "0.0.0.0" || opts.host === "::" ? "this machine's LAN address" : opts.host;
-    console.log(`[lan-server] serving ${opts.dir}`);
-    console.log(`[lan-server] listen http://${shown}:${opts.port}/  (room "${opts.room}")`);
-    console.log(`[lan-server] discovery: GET /eagler-lan/v1/health`);
-    console.log(`[lan-server] both players must open the client from THIS address to find each other`);
+    // Print the addresses a player can actually type. "this machine's LAN
+    // address" is not one of them, and picking the wrong one (a VPN, a docker
+    // bridge) is the usual reason two players never see each other.
+    const page = fs.existsSync(path.join(opts.dir, "direct-connect.html")) ? "/direct-connect.html" : "/";
+    console.log(`[lan-server] serving ${opts.dir}  (room "${opts.room}")`);
+    for (const url of localUrls(opts)) {
+      console.log(`[lan-server] open on BOTH players: ${url}${page}`);
+    }
+    console.log("[lan-server] automatic discovery only works when every player opens the client from one of those addresses");
   });
 
   const shutdown = () => {

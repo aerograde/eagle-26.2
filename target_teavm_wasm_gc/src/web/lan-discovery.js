@@ -54,7 +54,8 @@
   var HEARTBEAT_MS = 8000;
   var POLL_WAIT_MS = 15000;
   var BEAT_MS = 4000;
-  var PING_TIMEOUT_MS = 9000;      // no pong for this long -> the link is dead
+  var PING_TIMEOUT_MS = 9000;      // no pong for this long -> the link is suspect
+  var DEAD_TIMEOUT_MS = 25000;     // no pong for this long -> rebuild the link
   var FAILED_RETRY_MS = 60000;     // after MAX_LINK_ATTEMPTS, try again slowly
   var PROBE_TIMEOUT_MS = 2500;
   var LINK_TIMEOUT_MS = 12000;
@@ -78,6 +79,7 @@
   // ------------------------------------------------------------------ state
   var state = disabled ? "disabled" : "idle";
   var lastError = null;
+  var serviceMissing = false;  // origin answered, but has no discovery service
   var service = null;          // health payload
   var self = null;             // { id, name, room, scope }
   var peers = Object.create(null); // id -> record
@@ -216,6 +218,7 @@
       firstSeen: now(),
       lastSeen: now(),
       lastBeat: 0,
+      lastPong: 0,
       attempts: 0,
       nextRetryAt: 0,
       remoteGeneration: 0,   // newest offer generation seen from this peer
@@ -423,6 +426,7 @@
       record.state = "open";
       record.rttMs = -1;
       record.lastBeat = now();
+      record.lastPong = now();
       record.attempts = 0;
       record.nextRetryAt = 0;
       try {
@@ -522,8 +526,14 @@
             });
         });
       } else if (kind === "answer") {
-        // Only the offerer applies an answer, and only once per link.
+        // Only the offerer applies an answer, and only once per link. A duplicate
+        // arrives when the peer rebuilt its link and answered the same offer
+        // twice: if the connection is already up that is a no-op, not a failure.
         if (!link.initiator || link.answerApplied) return;
+        if (pc.connectionState === "connected"
+            || (link.channel && link.channel.readyState === "open")) {
+          return;
+        }
         link.answerApplied = true;
         enqueue(function () {
           return pc.setRemoteDescription({ type: "answer", sdp: payload.sdp })
@@ -534,6 +544,7 @@
             .catch(function (err) {
               link.answerApplied = false;
               log("error", "answer handling failed: " + (err && err.message));
+              if (pc.connectionState === "connected") return;
               retryLink(record, "answer failed");
             });
         });
@@ -585,6 +596,7 @@
 
   function retryLink(record, reason) {
     var attempts = record.attempts || 0;
+    log("info", "rebuilding the link to " + record.id.slice(0, 8) + " (" + reason + ")");
     closeLink(record, reason);
     if (attempts >= MAX_LINK_ATTEMPTS) {
       record.state = "failed";
@@ -624,6 +636,7 @@
     if (message.t === "pong") {
       if (typeof message.s === "number") record.rttMs = Math.max(0, now() - message.s);
       record.lastBeat = now();
+      record.lastPong = now();
       record.disconnectedAt = 0;
       return;
     }
@@ -644,10 +657,15 @@
           throw new Error("not an eagler-lan service");
         }
         service = health;
+        serviceMissing = false;
         return true;
       }, function (err) {
         probeInFlight = false;
         lastError = err && err.name === "AbortError" ? "discovery service did not answer" : (err && err.message) || "discovery service unavailable";
+        // A 404/405/410 means the origin is there but is an ordinary static
+        // host: that is the common case (python -m http.server, a CDN), and the
+        // one case where the player can act on the message.
+        serviceMissing = !!(err && (err.status === 404 || err.status === 405 || err.status === 410));
         return false;
       });
   }
@@ -736,8 +754,14 @@
         var record = peers[id];
         var channel = record.link && record.link.channel;
         if (record.state === "open" && channel && channel.readyState === "open") {
-          if (now() - record.lastBeat > PING_TIMEOUT_MS
-              || (record.disconnectedAt && now() - record.disconnectedAt > PING_TIMEOUT_MS)) {
+          // Only a pong proves the peer is still there: sending our own ping must
+          // not count as liveness, or a page whose timers stalled would keep a
+          // dead link forever. One missed window is not death either - ICE
+          // recovers on its own after a hiccup and a rebuild costs a whole
+          // handshake, so only sustained silence tears the link down.
+          var silentForMs = now() - (record.lastPong || record.lastBeat || 0);
+          if (silentForMs > DEAD_TIMEOUT_MS
+              || (record.disconnectedAt && now() - record.disconnectedAt > DEAD_TIMEOUT_MS)) {
             retryLink(record, "peer stopped answering");
           } else {
             record.lastBeat = now();
@@ -833,7 +857,8 @@
       case "disabled": return "Automatic LAN discovery is turned off (?lan=off)";
       case "idle": return "Automatic LAN discovery is idle";
       case "probing": return "Checking this page's origin for LAN discovery...";
-      case "unavailable": return "Automatic LAN discovery unavailable here (" + (lastError || "no service") + ")";
+      case "unavailable": return "Automatic LAN discovery unavailable here (" + (lastError || "no service") + ")"
+        + (serviceMissing ? " - run: node tools/lan-server.mjs" : "");
       case "online": {
         var open = 0;
         var seen = 0;

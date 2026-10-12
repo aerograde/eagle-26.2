@@ -88,13 +88,25 @@ mesh and server workers relink in a few minutes each.
 ## Running the packaged client
 
 `dist/direct-connect.html` is a complete client, but it must be **served over
-HTTP** (open it from a local web server, not `file://`), and both sides of a
-direct connection must use the same origin, for example:
+HTTP** (open it from a local web server, not `file://`).
+
+For two players on the same network, serve it with the bundled discovery
+server: it is the same static file server, plus the `/eagler-lan/v1/` endpoints
+that let both clients find each other with no codes typed.
 
 ```sh
-python3 -m http.server 8000 --directory dist
+node tools/lan-server.mjs --dir dist
 ```
 
-Then `http://localhost:8000/direct-connect.html` on both machines (or two tabs
-on one machine for a local test). "Get game audio" is not required: the client
-runs without the optional music pack.
+The banner prints the exact address to open, for example
+`http://192.168.0.100:8090/direct-connect.html`. Open that same URL on every
+machine that wants to play. Players are grouped by network (the `/24` of their
+address), so machines on another network stay invisible to each other.
+
+Any plain static server works too, and the manual invite codes still work
+there, but automatic discovery cannot: `python3 -m http.server 8000 --directory
+dist`, a CDN or GitHub Pages has no `/eagler-lan/v1/` endpoints, so the client
+reports `Automatic LAN discovery unavailable here (HTTP 404) - run: node
+tools/lan-server.mjs` and only the copy/paste codes work. Nothing else about
+the client depends on that service. "Get game audio" is not required either:
+the client runs without the optional music pack.

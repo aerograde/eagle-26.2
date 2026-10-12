@@ -118,6 +118,15 @@ python3 -m http.server 8000 --directory target_teavm_wasm_gc/build/web
 Open `http://localhost:8000/`. On Windows, `py -3` can replace `python3`.
 Test the title screen, a world, and saving before sharing the build.
 
+Automatic same-network peer discovery needs the `/eagler-lan/v1/` endpoints on
+the page's own origin, which a plain static server does not provide - the client
+says so and falls back to the manual join codes. To serve the folder with
+discovery enabled, use the bundled server and open the address it prints:
+
+```sh
+node tools/lan-server.mjs --dir target_teavm_wasm_gc/build/web
+```
+
 ## Cloudflare hosting
 
 Cloudflare is a hosting step after compilation, not another Java build mode.
