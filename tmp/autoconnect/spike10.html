@@ -1,0 +1,191 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Is the sending socket a property of the destination address?</title></head>
+<body>
+<pre id="out" style="font:12px monospace;white-space:pre-wrap"></pre>
+<script>
+/*
+ * Spike 10.  The pulse symbols are read off the source port of the check, but a
+ * connection owns two UDP sockets and Chrome picks.  Before a payload can label
+ * a source by the socket it will use, one question has to be answered: is that
+ * choice a property of the *destination address* (so one census check anywhere
+ * on the peer answers it for every target), or does every (source, target port)
+ * pair decide for itself (so no census is possible without spending the shot)?
+ *
+ * mode=recv           one listener; reports both of its UDP ports and records
+ *                     every arrival with the local socket it landed on
+ * mode=send&a=&b=     N sources, each firing at a closed port and at both
+ *                     listener sockets; then reads back, from each source's own
+ *                     stats, which local port each of those targets used.
+ */
+(function () {
+  "use strict";
+  var out = document.getElementById("out");
+  var R = { ok: false, error: null, role: null, ports: [], arrivals: [], fires: [], readback: {} };
+  window.__spike = R;
+  function say(k, m) {
+    var line = k + ": " + (typeof m === "string" ? m : JSON.stringify(m));
+    console.log("[spike10] " + line);
+    out.textContent += line + "\n";
+  }
+  var sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+  var UFRAG = "AC24aa";
+  var PWD = "AC24shared7xpadded000000";
+  function munge(sdp) {
+    return sdp.replace(/a=ice-ufrag:[^\r\n]*/g, "a=ice-ufrag:" + UFRAG)
+      .replace(/a=ice-pwd:[^\r\n]*/g, "a=ice-pwd:" + PWD);
+  }
+  function forge(localSdp) {
+    var lines = String(localSdp).split(/\r\n|\n/), kept = [];
+    for (var i = 0; i < lines.length; i++) {
+      var L = lines[i].replace(/\r$/, "");
+      if (L === "" || /^a=candidate:/.test(L)) continue;
+      if (/^a=ice-ufrag:/.test(L)) { kept.push("a=ice-ufrag:" + UFRAG); continue; }
+      if (/^a=ice-pwd:/.test(L)) { kept.push("a=ice-pwd:" + PWD); continue; }
+      if (/^a=fingerprint:/.test(L)) {
+        var fp = []; for (var j = 0; j < 32; j++) fp.push("AB");
+        kept.push("a=fingerprint:sha-256 " + fp.join(":")); continue;
+      }
+      if (/^a=setup:/.test(L)) { kept.push("a=setup:passive"); continue; }
+      kept.push(L);
+    }
+    return kept.join("\r\n") + "\r\n";
+  }
+  function shared() {
+    var pc = new RTCPeerConnection({ iceServers: [] });
+    pc.createDataChannel("probe", { ordered: true });
+    return pc.createOffer().then(function (o) {
+      return pc.setLocalDescription({ type: "offer", sdp: munge(o.sdp) });
+    }).then(function () {
+      return pc.setRemoteDescription({ type: "answer", sdp: forge(pc.localDescription.sdp) });
+    }).then(function () { return pc; });
+  }
+  function udpPorts(pc) {
+    return pc.getStats().then(function (stats) {
+      var ports = [];
+      stats.forEach(function (s) {
+        if (s.type === "local-candidate" && s.protocol === "udp") ports.push(s.port);
+      });
+      return ports;
+    }, function () { return []; });
+  }
+  function waitPorts(pc) {
+    var until = Date.now() + 4000;
+    return (function attempt() {
+      return udpPorts(pc).then(function (ports) {
+        if (ports.length || Date.now() > until) return ports;
+        return sleep(50).then(attempt);
+      });
+    })();
+  }
+  function fire(pc, address, port) {
+    var t = Date.now();
+    try {
+      return pc.addIceCandidate({
+        candidate: "candidate:1 1 udp 2130706431 " + address + " " + port + " typ host",
+        sdpMid: "0", sdpMLineIndex: 0
+      }).then(function () { return { ok: true, at: t }; }, function () { return { ok: false, at: t }; });
+    } catch (e) { return Promise.resolve({ ok: false, at: t }); }
+  }
+  // remote port -> local port, straight out of the source's own statistics
+  function usedLocalPorts(pc) {
+    return pc.getStats().then(function (stats) {
+      var rem = {}, loc = {}, pair = [];
+      stats.forEach(function (s) {
+        if (s.type === "remote-candidate") rem[s.id] = s.port;
+        if (s.type === "local-candidate") loc[s.id] = s.port;
+        if (s.type === "candidate-pair") pair.push(s);
+      });
+      var map = {};
+      pair.forEach(function (p) {
+        var r = rem[p.remoteCandidateId], l = loc[p.localCandidateId];
+        if (r !== undefined && l !== undefined) map[r] = l;
+      });
+      return map;
+    }, function () { return {}; });
+  }
+
+  function receive() {
+    return shared().then(function (pc) {
+      return waitPorts(pc).then(function (ports) {
+        R.ports = ports;
+        say("listener-ports", ports);
+        var seen = Object.create(null);
+        var until = Date.now() + 30000;
+        return (function poll() {
+          if (Date.now() > until) return Promise.resolve();
+          return pc.getStats().then(function (stats) {
+            var localOf = {}, portOf = {};
+            stats.forEach(function (s) {
+              if (s.type === "candidate-pair") localOf[s.remoteCandidateId] = s.localCandidateId;
+              if (s.type === "local-candidate") portOf[s.id] = s.port;
+            });
+            stats.forEach(function (s) {
+              if (s.type !== "remote-candidate" || s.candidateType !== "prflx") return;
+              if (seen[s.id]) return;
+              seen[s.id] = true;
+              R.arrivals.push({
+                id: s.id, source: s.port, at: Date.now(),
+                localPort: portOf[localOf[s.id]] || 0
+              });
+            });
+            return sleep(6).then(poll);
+          }, function () { return sleep(20).then(poll); });
+        })();
+      });
+    }).then(function () { say("arrivals", R.arrivals.length); });
+  }
+
+  function send(address, a, b) {
+    var N = 40;
+    var closed = 41000;
+    var pcs = [];
+    return (function batch(i) {
+      if (i >= N) return Promise.resolve();
+      var group = [];
+      for (var k = 0; k < 6 && i + k < N; k++) group.push(shared());
+      return Promise.all(group).then(function (list) {
+        pcs = pcs.concat(list);
+        return batch(i + 6);
+      });
+    })(0).then(function () {
+      return Promise.all(pcs.map(waitPorts));
+    }).then(function (lists) {
+      R.own = lists;
+      var own = lists.map(function (l) { return l; });
+      var chain = Promise.resolve();
+      pcs.forEach(function (pc, i) {
+        chain = chain.then(function () {
+          var rec = { i: i, own: own[i], at: {} };
+          R.fires.push(rec);
+          return fire(pc, address, closed).then(function (r) { rec.at.closed = r.at; })
+            .then(function () { return sleep(120); })
+            .then(function () { return fire(pc, address, a); })
+            .then(function (r) { rec.at.a = r.at; })
+            .then(function () { return sleep(120); })
+            .then(function () { return fire(pc, address, b); })
+            .then(function (r) { rec.at.b = r.at; });
+        });
+      });
+      return chain.then(function () { return sleep(2500); }).then(function () {
+        return Promise.all(pcs.map(usedLocalPorts)).then(function (maps) {
+          maps.forEach(function (m, i) { R.readback[i] = m; });
+          say("readback-done", pcs.length);
+        });
+      });
+    }).then(function () { say("fired", R.fires.length); return sleep(1500); })
+      .then(function () { R.params = { closed: closed, a: a, b: b }; });
+  }
+
+  var params = new URLSearchParams(location.search || "");
+  var mode = params.get("mode") || "recv";
+  R.role = mode;
+  var job = mode === "send"
+    ? send(params.get("addr") || "127.0.0.1", Number(params.get("a")), Number(params.get("b")))
+    : receive();
+  job.then(function () { R.ok = true; say("done", true); },
+    function (e) { R.error = String(e && e.message ? e.message : e); say("error", R.error); });
+})();
+</script>
+</body>
+</html>

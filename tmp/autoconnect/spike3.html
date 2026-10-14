@@ -1,0 +1,161 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>AutoConnect address + throughput probe</title></head>
+<body>
+<pre id="out" style="font:12px monospace;white-space:pre-wrap"></pre>
+<script>
+(function () {
+  "use strict";
+  var UFRAG = "AC24aa", PWD = "AC24shared7xpadded000000";
+  var out = document.getElementById("out");
+  var RESULT = { ok: false, error: null, steps: {}, logs: [] };
+  window.__spike = RESULT;
+  function say(k, m) {
+    var line = k + ": " + (typeof m === "string" ? m : JSON.stringify(m));
+    RESULT.logs.push(line);
+    console.log("[spike] " + line);
+    out.textContent += line + "\n";
+  }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function dummyFp() { var p = []; for (var i = 0; i < 32; i++) p.push("AB"); return p.join(":"); }
+  function munge(sdp) {
+    return sdp.replace(/a=ice-ufrag:[^\r\n]*/g, "a=ice-ufrag:" + UFRAG)
+              .replace(/a=ice-pwd:[^\r\n]*/g, "a=ice-pwd:" + PWD);
+  }
+  function forgeAnswer(localSdp) {
+    var lines = String(localSdp).split(/\r\n|\n/), kept = [];
+    for (var i = 0; i < lines.length; i++) {
+      var L = lines[i].replace(/\r$/, "");
+      if (L === "") continue;
+      if (/^a=candidate:/.test(L)) continue;
+      if (/^a=ice-ufrag:/.test(L)) { kept.push("a=ice-ufrag:" + UFRAG); continue; }
+      if (/^a=ice-pwd:/.test(L)) { kept.push("a=ice-pwd:" + PWD); continue; }
+      if (/^a=fingerprint:/.test(L)) { kept.push("a=fingerprint:sha-256 " + dummyFp()); continue; }
+      if (/^a=setup:/.test(L)) { kept.push("a=setup:passive"); continue; }
+      kept.push(L);
+    }
+    return kept.join("\r\n") + "\r\n";
+  }
+  function makeSharedPc(collect) {
+    var pc = new RTCPeerConnection({ iceServers: [] });
+    pc.createDataChannel("probe", { ordered: true });
+    if (collect) {
+      pc.addEventListener("icecandidate", function (e) {
+        if (e.candidate) collect.push(e.candidate.candidate);
+      });
+    }
+    return pc.createOffer().then(function (offer) {
+      return pc.setLocalDescription({ type: "offer", sdp: munge(offer.sdp) });
+    }).then(function () {
+      return pc.setRemoteDescription({ type: "answer", sdp: forgeAnswer(pc.localDescription.sdp) });
+    }).then(function () { return pc; });
+  }
+  function sentTotal(pc) {
+    return pc.getStats().then(function (stats) {
+      var total = 0;
+      stats.forEach(function (s) { if (s.type === "candidate-pair") total += (s.requestsSent || 0); });
+      return total;
+    });
+  }
+  function cand(ip, port) {
+    return { candidate: "candidate:1 1 udp 2130706431 " + ip + " " + port + " typ host", sdpMid: "0", sdpMLineIndex: 0 };
+  }
+
+  // A: what does the page know about its own address?
+  function addressDisclosure() {
+    var cands = [];
+    return makeSharedPc(cands).then(function (pc) {
+      return sleep(1200).then(function () {
+        RESULT.steps.sdp = pc.localDescription.sdp;
+        RESULT.steps.onicecandidate = cands;
+        var lines = (pc.localDescription.sdp || "").split(/\r\n|\n/).filter(function (l) {
+          return /^a=candidate:/.test(l);
+        });
+        say("A:sdp-candidate-lines", lines);
+        say("A:icecandidate-strings", cands);
+        return pc.getStats().then(function (stats) {
+          var rows = [];
+          stats.forEach(function (s) {
+            if (s.type === "local-candidate") {
+              rows.push({ type: s.candidateType, proto: s.protocol, address: s.address, ip: s.ip, port: s.port, relatedAddress: s.relatedAddress });
+            }
+          });
+          RESULT.steps.localCandidates = rows;
+          say("A:stats-local", rows);
+        });
+      });
+    });
+  }
+
+  // B: does check throughput scale with the number of connections?
+  function parallelThroughput(parallel) {
+    var t0 = performance.now();
+    var pcs = [];
+    var chain = Promise.resolve();
+    for (var i = 0; i < parallel; i++) {
+      chain = chain.then(function () { return makeSharedPc(); }).then(function (pc) { pcs.push(pc); });
+    }
+    return chain.then(function () {
+      var buildMs = Math.round(performance.now() - t0);
+      var ips = [];
+      for (var k = 1; k <= 254; k++) ips.push("192.168.0." + k);
+      var targets = [];
+      for (var j = 0; j < parallel; j++) targets.push(40000 + j);   // one closed port per scanner
+      var adds = [];
+      for (var s = 0; s < pcs.length; s++) {
+        for (var m = 0; m < ips.length; m++) {
+          adds.push(pcs[s].addIceCandidate(cand(ips[m], targets[s])).catch(function () { return null; }));
+        }
+      }
+      var addT0 = performance.now();
+      return Promise.all(adds).then(function () {
+        var addMs = Math.round(performance.now() - addT0);
+        var base = 0, chain2 = Promise.resolve();
+        pcs.forEach(function (pc) { chain2 = chain2.then(function () { return sentTotal(pc).then(function (n) { base += n; }); }); });
+        return chain2.then(function () {
+          var samples = [];
+          return (function sample(step) {
+            if (step > 4) return Promise.resolve();
+            return sleep(1000).then(function () {
+              var total = 0, chain3 = Promise.resolve();
+              pcs.forEach(function (pc) { chain3 = chain3.then(function () { return sentTotal(pc).then(function (n) { total += n; }); }); });
+              return chain3.then(function () {
+                samples.push(Math.round((total - base)));
+                return sample(step + 1);
+              });
+            });
+          })(1).then(function () {
+            var out2 = { parallel: parallel, buildMs: buildMs, addMs: addMs, cumulativeChecksAfterEachSecond: samples };
+            RESULT.steps["throughput" + parallel] = out2;
+            say("B" + parallel, out2);
+            pcs.forEach(function (pc) { try { pc.close(); } catch (e) { } });
+            return sleep(500);
+          });
+        });
+      });
+    });
+  }
+
+  function run() {
+    var params = new URLSearchParams(location.search || "");
+    var only = params.get("only");
+    var steps = [
+      ["A", addressDisclosure],
+      ["B8", function () { return parallelThroughput(8); }],
+      ["B32", function () { return parallelThroughput(32); }],
+      ["B96", function () { return parallelThroughput(96); }]
+    ];
+    return steps.reduce(function (chain, entry) {
+      return chain.then(function () {
+        if (only && only !== entry[0]) return null;
+        say("BEGIN", entry[0]);
+        return entry[1]();
+      });
+    }, Promise.resolve()).then(function () { RESULT.ok = true; })
+      .catch(function (err) { RESULT.error = String(err && err.message ? err.message : err); say("ERROR", RESULT.error); });
+  }
+  try { run(); } catch (e) { RESULT.error = String(e); say("THROW", RESULT.error); }
+})();
+</script>
+</body>
+</html>

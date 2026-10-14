@@ -1,0 +1,384 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Pulse receive-side instrumentation</title></head>
+<body>
+<pre id="out" style="font:11px monospace;white-space:pre-wrap"></pre>
+<script>
+/*
+ * Spike 9.  The pulse carrier is only viable if the receiver can say, for each
+ * pulse, WHEN it arrived and WHICH port it came from.  This probe instruments
+ * the two things that can go wrong and that the engine's own logs cannot
+ * separate:
+ *
+ *   mode=recv   every getStats() call is logged: start/end time, duration, pair
+ *               count, the report's own timestamp (a repeated value is a cached
+ *               report), every new prflx candidate with its port, every change
+ *               of requestsReceived/responsesReceived/state, raw field dumps of
+ *               one pair and one remote candidate, and the id set over time so
+ *               pruning shows up.
+ *   mode=send   fires checks at a known target from known connections and logs
+ *               the exact send time of each one, in phases: baseline, one-tick
+ *               burst, repeats from the same source, a source whose pacer is
+ *               already loaded, a 10-slot x 4-source mini payload at 200 ms, and
+ *               a bulk load that grows the receiver's pair count.
+ *
+ * Both pages stamp with Date.now() on the same machine, so the two logs join.
+ */
+(function () {
+  "use strict";
+  var out = document.getElementById("out");
+  var R = {
+    ok: false, error: null, role: null,
+    ports: [], own: [], pulses: [],
+    polls: [], pollCount: 0, pollDur: [], reportTs: [], cachedReports: 0,
+    arrivals: [], counters: [], disappearances: [], snapshots: [],
+    rawPair: null, rawRemote: null, idRuns: {}, neverSeen: 0, baselineIds: 0
+  };
+  window.__spike = R;
+  function say(k, m) {
+    var line = k + ": " + (typeof m === "string" ? m : JSON.stringify(m));
+    console.log("[spike9] " + line);
+    out.textContent += line + "\n";
+  }
+  var sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+  var UFRAG = "AC24aa";
+  var PWD = "AC24shared7xpadded000000";
+  function munge(sdp) {
+    return sdp.replace(/a=ice-ufrag:[^\r\n]*/g, "a=ice-ufrag:" + UFRAG)
+      .replace(/a=ice-pwd:[^\r\n]*/g, "a=ice-pwd:" + PWD);
+  }
+  function forge(localSdp) {
+    var lines = String(localSdp).split(/\r\n|\n/), kept = [];
+    for (var i = 0; i < lines.length; i++) {
+      var L = lines[i].replace(/\r$/, "");
+      if (L === "" || /^a=candidate:/.test(L)) continue;
+      if (/^a=ice-ufrag:/.test(L)) { kept.push("a=ice-ufrag:" + UFRAG); continue; }
+      if (/^a=ice-pwd:/.test(L)) { kept.push("a=ice-pwd:" + PWD); continue; }
+      if (/^a=fingerprint:/.test(L)) {
+        var fp = []; for (var j = 0; j < 32; j++) fp.push("AB");
+        kept.push("a=fingerprint:sha-256 " + fp.join(":")); continue;
+      }
+      if (/^a=setup:/.test(L)) { kept.push("a=setup:passive"); continue; }
+      kept.push(L);
+    }
+    return kept.join("\r\n") + "\r\n";
+  }
+  function shared() {
+    var pc = new RTCPeerConnection({ iceServers: [] });
+    pc.createDataChannel("probe", { ordered: true });
+    return pc.createOffer().then(function (o) {
+      return pc.setLocalDescription({ type: "offer", sdp: munge(o.sdp) });
+    }).then(function () {
+      return pc.setRemoteDescription({ type: "answer", sdp: forge(pc.localDescription.sdp) });
+    }).then(function () { return pc; });
+  }
+  function udpPorts(pc) {
+    return pc.getStats().then(function (stats) {
+      var ports = [];
+      stats.forEach(function (s) {
+        if (s.type === "local-candidate" && s.protocol === "udp") ports.push(s.port);
+      });
+      return ports;
+    }, function () { return []; });
+  }
+  function waitPorts(pc) {
+    var until = Date.now() + 4000;
+    return (function attempt() {
+      return udpPorts(pc).then(function (ports) {
+        if (ports.length || Date.now() > until) return ports;
+        return sleep(50).then(attempt);
+      });
+    })();
+  }
+  function candidateLine(address, port) {
+    return "candidate:1 1 udp 2130706431 " + address + " " + port + " typ host";
+  }
+  function fire(pc, address, port) {
+    var t = Date.now();
+    try {
+      return pc.addIceCandidate({
+        candidate: candidateLine(address, port), sdpMid: "0", sdpMLineIndex: 0
+      }).then(function () { return { ok: true, t: t, t2: Date.now() }; },
+        function () { return { ok: false, t: t, t2: Date.now() }; });
+    } catch (e) { return Promise.resolve({ ok: false, t: t, t2: Date.now() }); }
+  }
+  // Every own property, JSON-safe, so a field that only exists in Chrome shows up.
+  function dumpObj(s) {
+    var copy = {};
+    for (var k in s) {
+      if (!Object.prototype.hasOwnProperty.call(s, k)) continue;
+      var v = s[k];
+      if (typeof v === "function") continue;
+      copy[k] = (v && typeof v === "object") ? ("[" + (v.type || "obj") + "]") : v;
+    }
+    return copy;
+  }
+
+  // ------------------------------------------------------------- receiver
+  function pollOnce(pc, seenIds) {
+    var t0 = Date.now();
+    return pc.getStats().then(function (stats) {
+      var t1 = Date.now();
+      var row = { t0: t0, t1: t1, dur: t1 - t0, pairs: 0, prflx: 0, objTs: 0 };
+      var news = [], counterNews = [], remoteIds = Object.create(null);
+      var prflxIds = Object.create(null);
+      stats.forEach(function (s) {
+        if (!row.objTs && s.timestamp) row.objTs = s.timestamp;
+        if (s.type === "remote-candidate") {
+          remoteIds[s.id] = true;
+          if (s.candidateType === "prflx") {
+            prflxIds[s.id] = true;
+            row.prflx++;
+            if (!R.rawRemote) { R.rawRemote = dumpObj(s); say("raw-remote-candidate", R.rawRemote); }
+            if (!seenIds[s.id]) {
+              seenIds[s.id] = t1;
+              news.push({ id: s.id, port: s.port, at: t1, prevPollEnd: seenIds.__lastEnd || 0 });
+            }
+          }
+        }
+        if (s.type === "candidate-pair") {
+          row.pairs++;
+          if (!R.rawPair) { R.rawPair = dumpObj(s); say("raw-candidate-pair", R.rawPair); }
+        }
+      });
+      var ports = [];
+      for (var p in prflxIds) ports.push(p);
+      // pair counters: only when something moved, so a repeat pulse from one
+      // source is visible even though it creates no new candidate.  Capped: a
+      // change log, not a poll log.
+      var lastC = R.__lastCounters || (R.__lastCounters = Object.create(null));
+      if (ports.length) {
+        stats.forEach(function (s) {
+          if (s.type !== "candidate-pair" || !prflxIds[s.remoteCandidateId]) return;
+          var key = s.remoteCandidateId;
+          var req = s.requestsReceived === undefined ? null : s.requestsReceived;
+          var resp = s.responsesReceived === undefined ? null : s.responsesReceived;
+          var state = s.state === undefined ? null : s.state;
+          var now4 = req + ":" + resp + ":" + state;
+          if (lastC[key] === now4) return;
+          lastC[key] = now4;
+          counterNews.push({
+            t: t1, id: key, req: req, resp: resp, state: state,
+            nom: s.nominated === undefined ? null : s.nominated,
+            crtt: s.currentRoundTripTime === undefined ? null : s.currentRoundTripTime
+          });
+        });
+      }
+      // disappearance: candidates that were prflx and are gone now
+      if (R.__lastIds) {
+        for (var id in R.__lastIds) {
+          if (remoteIds[id]) continue;
+          R.disappearances.push({ t: t1, id: id });
+        }
+      }
+      R.__lastIds = remoteIds;
+      R.pollCount++;
+      R.pollDur.push(row.dur);
+      R.reportTs.push(row.objTs);
+      if (R.reportTs.length > 1 && row.objTs === R.reportTs[R.reportTs.length - 2]) R.cachedReports++;
+      if (news.length) {
+        for (var n = 0; n < news.length; n++) news[n].pollIndex = R.pollCount;
+        R.arrivals = R.arrivals.concat(news);
+        R.polls.push({ i: R.pollCount, t0: t0, t1: t1, dur: row.dur, pairs: row.pairs, prflx: row.prflx, newIds: news.length, objTs: row.objTs });
+      } else if (R.pollCount % 5 === 0) {
+        R.polls.push({ i: R.pollCount, t0: t0, t1: t1, dur: row.dur, pairs: row.pairs, prflx: row.prflx, newIds: 0, objTs: row.objTs });
+      }
+      R.counterSnapshots = R.counterSnapshots || [];
+      if (counterNews.length) R.counterSnapshots.push(counterNews);
+      if (R.polls.length > 4000) R.polls.splice(0, 1000);
+      if (R.arrivals.length > 3000) R.arrivals.splice(0, 1000);
+      return row;
+    }, function () { return null; });
+  }
+
+  function receive(pc, durationMs) {
+    return waitPorts(pc).then(function (ports) {
+      R.ports = ports;
+      say("listener-ports", ports);
+      if (!ports.length) { R.error = "no udp port"; return null; }
+      var seenIds = Object.create(null);
+      var until = Date.now() + durationMs;
+      var lastSnap = 0;
+      return (function poll() {
+        if (Date.now() > until) return Promise.resolve();
+        return pollOnce(pc, seenIds).then(function (row) {
+          if (!row) return sleep(20).then(poll);
+          seenIds.__lastEnd = Date.now();
+          if (now2() - lastSnap > 1000) {
+            lastSnap = now2();
+            R.snapshots.push({
+              t: Date.now(), pairs: row.pairs, prflx: row.prflx,
+              pollIndex: R.pollCount, dur: row.dur
+            });
+          }
+          return sleep(4).then(poll);
+        });
+      })();
+    }).then(function () {
+      say("poll-summary", {
+        polls: R.pollCount,
+        arrivals: R.arrivals.length,
+        reports: R.reportTs.length,
+        repeatedReportTs: R.cachedReports,
+        disappeared: R.disappearances.length,
+        snapshots: R.snapshots.length
+      });
+    });
+  }
+  function now2() { return Date.now(); }
+
+  // --------------------------------------------------------------- sender
+  function mkSources(n, perBatch) {
+    var pcs = [];
+    return (function batch(i) {
+      if (i >= n) return Promise.resolve();
+      var group = [];
+      for (var k = 0; k < perBatch && i + k < n; k++) group.push(shared());
+      return Promise.all(group).then(function (list) {
+        pcs = pcs.concat(list);
+        return batch(i + perBatch);
+      });
+    })(0).then(function () {
+      return Promise.all(pcs.map(waitPorts));
+    }).then(function (lists) {
+      R.own = lists.map(function (l) { return l; });
+      return pcs;
+    });
+  }
+
+  function send(address, targetPort) {
+    var N = 184;
+    var T = { phases: {} };
+    return mkSources(N, 6).then(function (pcs) {
+      say("sources-ready", { count: pcs.length, withPorts: R.own.filter(function (l) { return l.length; }).length });
+      var port = Number(targetPort);
+      var fires = [];
+      function shot(kind, i, tgt, label) {
+        var rec = { kind: kind, i: i, ports: R.own[i] || [], target: tgt, at: 0, done: -1, ok: null, label: label || null };
+        fires.push(rec);
+        var p = fire(pcs[i], address, tgt);
+        rec.at = Date.now();
+        return p.then(function (r) { rec.done = Date.now(); rec.ok = r.ok; return r; });
+      }
+      var T0 = Date.now() + 1500;
+      T.phases.t0 = T0;
+      function at(ms) { return sleep(Math.max(0, ms - Date.now())); }
+      var chain = Promise.resolve();
+
+      // A: baseline - one pulse per fresh source, 400 ms apart
+      for (var a = 0; a < 10; a++) {
+        (function (a) {
+          chain = chain.then(function () { return at(T0 + a * 400); })
+            .then(function () { return shot("baseline", a, port); });
+        })(a);
+      }
+      // B: one-tick burst of 8 from fresh sources
+      chain = chain.then(function () { return at(T0 + 5000); }).then(function () {
+        var ps = [];
+        for (var b = 0; b < 8; b++) ps.push(shot("burst", 10 + b, port));
+        return Promise.all(ps);
+      });
+      // C: the same source fires at the same target four times, 400 ms apart
+      for (var c = 0; c < 4; c++) {
+        (function (c) {
+          chain = chain.then(function () { return at(T0 + 6500 + c * 400); })
+            .then(function () { return shot("repeat", 18, port, "shot" + c); });
+        })(c);
+      }
+      // D: a source whose pacer is already carrying 24 checks fires a pulse
+      [[20, 9000, 0], [22, 13000, 0], [24, 17000, 2000]].forEach(function (trial) {
+        var src = trial[0], when = trial[1], wait = trial[2];
+        chain = chain.then(function () { return at(T0 + when); }).then(function () {
+          var load = [];
+          for (var k = 0; k < 24; k++) load.push(shot("loadcheck", src, port + 1000 + k));
+          return Promise.all(load).then(function () { return at(T0 + when + wait); });
+        }).then(function () {
+          return shot("pacer-pulse", src, port, "src" + src + "wait" + wait);
+        });
+      });
+      // E: a mini payload - 10 slots of 200 ms, 4 sources per slot, one target
+      chain = chain.then(function () { return at(T0 + 25000); }).then(function () {
+        var inner = Promise.resolve();
+        for (var s = 0; s < 10; s++) {
+          (function (s) {
+            inner = inner.then(function () { return at(T0 + 25000 + s * 200); }).then(function () {
+              var ps = [];
+              for (var q = 0; q < 4; q++) ps.push(shot("slot", 28 + s * 4 + q, port, "slot" + s));
+              return Promise.all(ps);
+            });
+          })(s);
+        }
+        return inner;
+      });
+      // F: bulk load - 32 fresh sources fire once
+      chain = chain.then(function () { return at(T0 + 28500); }).then(function () {
+        var ps = [];
+        for (var f = 0; f < 32; f++) ps.push(shot("bulk", 68 + f, port));
+        return Promise.all(ps);
+      });
+      // G: the same 10-slot pattern twice, with the only difference being what
+      // the sources were already carrying.  Dirty sources [100..139] fire 24
+      // checks at closed ports one second before their slot pulse, which is the
+      // state the engine's sweep scanners are in when a payload reuses them.
+      // Clean sources [140..179] have no queue and have never fired at this
+      // target.  If the pacer is what loses cells, this is where it shows.
+      chain = chain.then(function () { return at(T0 + 45000); }).then(function () {
+        var ps = [];
+        for (var i = 100; i < 140; i++) {
+          for (var k = 0; k < 24; k++) ps.push(shot("dirtyload", i, port + 5000 + k));
+        }
+        return Promise.all(ps);
+      });
+      chain = chain.then(function () { return at(T0 + 46000); }).then(function () {
+        var inner = Promise.resolve();
+        for (var s = 0; s < 10; s++) {
+          (function (s) {
+            inner = inner.then(function () { return at(T0 + 46000 + s * 200); }).then(function () {
+              var ps = [];
+              for (var q = 0; q < 4; q++) ps.push(shot("dslot", 100 + s * 4 + q, port, "dslot" + s));
+              return Promise.all(ps);
+            });
+          })(s);
+        }
+        return inner;
+      });
+      chain = chain.then(function () { return at(T0 + 50500); }).then(function () {
+        var inner = Promise.resolve();
+        for (var s = 0; s < 10; s++) {
+          (function (s) {
+            inner = inner.then(function () { return at(T0 + 50500 + s * 200); }).then(function () {
+              var ps = [];
+              for (var q = 0; q < 4; q++) ps.push(shot("cslot", 140 + s * 4 + q, port, "cslot" + s));
+              return Promise.all(ps);
+            });
+          })(s);
+        }
+        return inner;
+      });
+      return chain.then(function () {
+        R.pulses = fires;
+        say("fired", fires.length);
+        return sleep(15000);
+      });
+    });
+  }
+
+  var params = new URLSearchParams(location.search || "");
+  var mode = params.get("mode") || "recv";
+  R.role = mode;
+  R.startedAt = Date.now();
+  var job;
+  if (mode === "send") {
+    job = send(params.get("addr") || "127.0.0.1", params.get("targetPort") || "50000");
+  } else {
+    job = shared().then(function (pc) {
+      R.pc = pc;
+      return receive(pc, Number(params.get("duration") || 90000));
+    });
+  }
+  job.then(function () { R.ok = true; say("done", true); },
+    function (e) { R.error = String(e && e.message ? e.message : e); say("error", R.error); });
+})();
+</script>
+</body>
+</html>

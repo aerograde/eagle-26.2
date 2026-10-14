@@ -1,0 +1,77 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>PeerConnection budget probe</title></head>
+<body>
+<pre id="out" style="font:12px monospace;white-space:pre-wrap"></pre>
+<script>
+(function () {
+  "use strict";
+  var out = document.getElementById("out");
+  var RESULT = { ok: false, error: null, steps: {} };
+  window.__spike = RESULT;
+  function say(k, m) {
+    var line = k + ": " + (typeof m === "string" ? m : JSON.stringify(m));
+    RESULT.steps[k] = m;
+    console.log("[spike] " + line);
+    out.textContent += line + "\n";
+  }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  function makePc() {
+    var pc = new RTCPeerConnection({ iceServers: [] });
+    pc.createDataChannel("probe", { ordered: true });
+    return pc.createOffer().then(function (o) { return pc.setLocalDescription(o); }).then(function () { return pc; });
+  }
+
+  function run() {
+    var pcs = [];
+    var limit = 0;
+    return (function step() {
+      if (pcs.length > 1200) return Promise.resolve();
+      var pc;
+      try {
+        pc = new RTCPeerConnection({ iceServers: [] });
+      } catch (e) {
+        limit = pcs.length;
+        say("plain-constructor-limit", pcs.length);
+        say("plain-error", String(e && e.message));
+        return Promise.resolve();
+      }
+      pc.createDataChannel("probe", { ordered: true });
+      pcs.push(pc);
+      return pc.createOffer().then(function (o) { return pc.setLocalDescription(o); })
+        .then(function () { return sleep(0); })
+        .then(step)
+        .catch(function (e) {
+          say("offer-failed-at", pcs.length);
+          say("offer-error", String(e && e.message));
+        });
+    })().then(function () {
+      if (!limit) { say("plain-constructor-limit", "over 1200"); return; }
+      say("maxConnections", limit);
+      // Does closing free the budget?
+      var closed = 0;
+      for (var i = 0; i < pcs.length; i += 2) { try { pcs[i].close(); closed++; } catch (e) { } }
+      return sleep(1500).then(function () {
+        var made = 0;
+        for (var j = 0; j < 200; j++) {
+          try {
+            var pc = new RTCPeerConnection({ iceServers: [] });
+            pc.createDataChannel("x", { ordered: true });
+            made++;
+          } catch (e) {
+            break;
+          }
+        }
+        say("afterClosingHalf", { closed: closed, opened: made });
+      });
+    });
+  }
+  try {
+    run().then(function () { RESULT.ok = true; })
+      .catch(function (e) { RESULT.error = String(e && e.message ? e.message : e); });
+  } catch (e) { RESULT.error = String(e); }
+})();
+</script>
+</body>
+</html>

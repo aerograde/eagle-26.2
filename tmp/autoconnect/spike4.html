@@ -1,0 +1,163 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>AutoConnect rendezvous probe</title></head>
+<body>
+<pre id="out" style="font:12px monospace;white-space:pre-wrap"></pre>
+<script>
+(function () {
+  "use strict";
+  var UFRAG = "AC24aa", PWD = "AC24shared7xpadded000000";
+  var out = document.getElementById("out");
+  var RESULT = { ok: false, error: null, steps: {}, logs: [] };
+  window.__spike = RESULT;
+  function say(k, m) {
+    var line = k + ": " + (typeof m === "string" ? m : JSON.stringify(m));
+    RESULT.logs.push(line);
+    console.log("[spike] " + line);
+    out.textContent += line + "\n";
+  }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function dummyFp() { var p = []; for (var i = 0; i < 32; i++) p.push("AB"); return p.join(":"); }
+  function munge(sdp) {
+    return sdp.replace(/a=ice-ufrag:[^\r\n]*/g, "a=ice-ufrag:" + UFRAG)
+              .replace(/a=ice-pwd:[^\r\n]*/g, "a=ice-pwd:" + PWD);
+  }
+  function forgeAnswer(localSdp) {
+    var lines = String(localSdp).split(/\r\n|\n/), kept = [];
+    for (var i = 0; i < lines.length; i++) {
+      var L = lines[i].replace(/\r$/, "");
+      if (L === "") continue;
+      if (/^a=candidate:/.test(L)) continue;
+      if (/^a=ice-ufrag:/.test(L)) { kept.push("a=ice-ufrag:" + UFRAG); continue; }
+      if (/^a=ice-pwd:/.test(L)) { kept.push("a=ice-pwd:" + PWD); continue; }
+      if (/^a=fingerprint:/.test(L)) { kept.push("a=fingerprint:sha-256 " + dummyFp()); continue; }
+      if (/^a=setup:/.test(L)) { kept.push("a=setup:passive"); continue; }
+      kept.push(L);
+    }
+    return kept.join("\r\n") + "\r\n";
+  }
+  function makeSharedPc(collect) {
+    var pc = new RTCPeerConnection({ iceServers: [] });
+    pc.createDataChannel("probe", { ordered: true });
+    if (collect) pc.addEventListener("icecandidate", function (e) { if (e.candidate) collect.push(e.candidate.candidate); });
+    return pc.createOffer().then(function (offer) {
+      return pc.setLocalDescription({ type: "offer", sdp: munge(offer.sdp) });
+    }).then(function () {
+      return pc.setRemoteDescription({ type: "answer", sdp: forgeAnswer(pc.localDescription.sdp) });
+    }).then(function () { return pc; });
+  }
+  function ownCandidate(pc) {
+    return sleep(700).then(function () {
+      var lines = (pc.localDescription.sdp || "").split(/\r\n|\n/).filter(function (l) { return /^a=candidate:/.test(l); });
+      for (var i = 0; i < lines.length; i++) {
+        var m = /a=candidate:\S+ \d+ udp \d+ (\S+) (\d+) typ host/.exec(lines[i]);
+        if (m) return { address: m[1], port: parseInt(m[2], 10), line: lines[i] };
+      }
+      return null;
+    });
+  }
+  function probes(pc) {
+    return pc.getStats().then(function (stats) {
+      var rows = [], cands = {};
+      stats.forEach(function (s) { if (s.type === "local-candidate" || s.type === "remote-candidate") cands[s.id] = s; });
+      stats.forEach(function (s) {
+        if (s.type !== "candidate-pair") return;
+        var rc = cands[s.remoteCandidateId];
+        rows.push({
+          state: s.state, sent: s.requestsSent, recv: s.requestsReceived,
+          remote: rc ? (rc.address + ":" + rc.port + "/" + rc.candidateType + "@" + rc.priority) : "?"
+        });
+      });
+      return rows;
+    });
+  }
+  function cand(addr, port) {
+    return { candidate: "candidate:1 1 udp 2130706431 " + addr + " " + port + " typ host", sdpMid: "0", sdpMLineIndex: 0 };
+  }
+  function maxPairCounters(pc) {
+    return pc.getStats().then(function (stats) {
+      var recv = 0, rems = [];
+      stats.forEach(function (s) {
+        if (s.type === "candidate-pair") recv += (s.requestsReceived || 0);
+      });
+      stats.forEach(function (s) { if (s.type === "remote-candidate") rems.push({ type: s.candidateType, port: s.port, prio: s.priority }); });
+      return { requestsReceived: recv, remotes: rems };
+    });
+  }
+
+  // C: can a peer be reached by sending a check to the subnet broadcast address?
+  function broadcastProbe() {
+    var listener = null, lc = null;
+    return makeSharedPc().then(function (pc) { listener = pc; return ownCandidate(pc); })
+      .then(function (c) {
+        lc = c;
+        RESULT.steps.listenerOwnCandidate = c;
+        say("C:listener", c);
+        return maxPairCounters(listener);
+      }).then(function (before) {
+        return makeSharedPc().then(function (sender) {
+          var broadcasts = ["192.168.0.255", "192.168.1.255", "10.0.0.255"];
+          var adds = broadcasts.map(function (b) { return sender.addIceCandidate(cand(b, lc.port)).catch(function () { return null; }); });
+          return Promise.all(adds).then(function () { return sleep(2500); }).then(function () {
+            return Promise.all([maxPairCounters(listener), probes(sender)]).then(function (r) {
+              RESULT.steps.broadcastListener = r[0];
+              RESULT.steps.broadcastSender = r[1];
+              say("C:listener-after", r[0]);
+              say("C:sender-pairs", r[1]);
+              say("C:verdict", (r[0].requestsReceived > before.requestsReceived ? "BROADCAST REACHED THE LISTENER" : "no inbound check arrived"));
+              try { sender.close(); } catch (e) { }
+            });
+          });
+        });
+      });
+  }
+
+  // D: can a peer be reached by name (mDNS) instead of by IP?
+  function nameProbe() {
+    var listener = null, lc = null, sc = null;
+    return makeSharedPc().then(function (pc) { listener = pc; return ownCandidate(pc); })
+      .then(function (c) {
+        lc = c;
+        say("D:listener", c);
+        RESULT.steps.nameTarget = c.address;
+        if (!/\.local$/.test(c.address)) { say("D:verdict", "own candidate is not a .local name: " + c.address); }
+        return makeSharedPc();
+      }).then(function (pc) {
+        sc = pc;
+        return pc.addIceCandidate(cand(lc.address, lc.port)).then(function () { return sleep(3000); });
+      }).then(function () {
+        return Promise.all([probes(sc), maxPairCounters(listener), pc3Stats(sc)]).then(function (r) {
+          RESULT.steps.nameSenderPairs = r[0];
+          RESULT.steps.nameListener = r[1];
+          RESULT.steps.nameSenderRemotes = r[2];
+          say("D:sender-pairs", r[0]);
+          say("D:listener", r[1]);
+          say("D:sender-remotes", r[2]);
+          say("D:verdict", sc.iceConnectionState);
+        });
+      });
+  }
+  function pc3Stats(pc) {
+    return pc.getStats().then(function (stats) {
+      var rows = [];
+      stats.forEach(function (s) {
+        if (s.type === "remote-candidate") rows.push({ address: s.address, ip: s.ip, port: s.port, type: s.candidateType });
+      });
+      return rows;
+    });
+  }
+
+  function run() {
+    var params = new URLSearchParams(location.search || "");
+    var only = params.get("only");
+    var steps = [["C", broadcastProbe], ["D", nameProbe]];
+    return steps.reduce(function (chain, e) {
+      return chain.then(function () { if (only && only !== e[0]) return null; say("BEGIN", e[0]); return e[1](); });
+    }, Promise.resolve()).then(function () { RESULT.ok = true; })
+      .catch(function (err) { RESULT.error = String(err && err.message ? err.message : err); say("ERROR", RESULT.error); });
+  }
+  try { run(); } catch (e) { RESULT.error = String(e); say("THROW", RESULT.error); }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,138 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Does getStats latency track live connections?</title></head>
+<body>
+<pre id="out" style="font:12px monospace;white-space:pre-wrap"></pre>
+<script>
+/*
+ * The carrier's read is a getStats() pass per reader, and this engine has
+ * measured two very different costs for it: 467 ms on the quiet page of run 11,
+ * ~3-4 s on the busy pages of runs 13-14.  This spike separates the two
+ * candidate causes, because the fix is different for each:
+ *
+ *   idle cost     - latency that grows with the number of live connections
+ *   firing cost   - latency while hundreds of addIceCandidate calls are in
+ *                   flight on the same page
+ *
+ * Stages (each measures 8 sequential passes on connection 0):
+ *   10  connections          readers only
+ *   42  connections          + 32
+ *   74  connections          + 32
+ *   138 connections          + 64
+ *   170 connections          + 32
+ *   170 + firing             the same pool, while 120 checks are added
+ */
+(function () {
+  "use strict";
+  var out = document.getElementById("out");
+  var R = { ok: false, error: null, stages: [] };
+  window.__spike = R;
+  function say(k, m) {
+    var line = k + ": " + (typeof m === "string" ? m : JSON.stringify(m));
+    console.log("[load] " + line);
+    out.textContent += line + "\n";
+  }
+  var UFRAG = "AC24aa";
+  var PWD = "AC24shared7xpadded000000";
+  function munge(sdp) {
+    return sdp.replace(/a=ice-ufrag:[^\r\n]*/g, "a=ice-ufrag:" + UFRAG)
+      .replace(/a=ice-pwd:[^\r\n]*/g, "a=ice-pwd:" + PWD);
+  }
+  function dummyFingerprint() {
+    var fp = [];
+    for (var j = 0; j < 32; j++) fp.push("AB");
+    return fp.join(":");
+  }
+  function forge(localSdp) {
+    var lines = String(localSdp).split(/\r\n|\n/), kept = [];
+    for (var i = 0; i < lines.length; i++) {
+      var L = lines[i].replace(/\r$/, "");
+      if (L === "" || /^a=candidate:/.test(L)) continue;
+      if (/^a=ice-ufrag:/.test(L)) { kept.push("a=ice-ufrag:" + UFRAG); continue; }
+      if (/^a=ice-pwd:/.test(L)) { kept.push("a=ice-pwd:" + PWD); continue; }
+      if (/^a=fingerprint:/.test(L)) { kept.push("a=fingerprint:sha-256 " + dummyFingerprint()); continue; }
+      if (/^a=setup:/.test(L)) { kept.push("a=setup:passive"); continue; }
+      kept.push(L);
+    }
+    return kept.join("\r\n") + "\r\n";
+  }
+  function makeSharedPc() {
+    var pc = new RTCPeerConnection({ iceServers: [] });
+    pc.createDataChannel("probe", { ordered: true });
+    return pc.createOffer().then(function (o) {
+      return pc.setLocalDescription({ type: "offer", sdp: munge(o.sdp) });
+    }).then(function () {
+      return pc.setRemoteDescription({ type: "answer", sdp: forge(pc.localDescription.sdp) });
+    }).then(function () { return pc; });
+  }
+  var pcs = [];
+  function add(n) {
+    var jobs = [];
+    for (var i = 0; i < n; i++) jobs.push(makeSharedPc().then(function (pc) { pcs.push(pc); }));
+    return Promise.all(jobs);
+  }
+  function measure(label) {
+    var probe = pcs[0];
+    var times = [];
+    var chain = Promise.resolve();
+    for (var i = 0; i < 8; i++) {
+      chain = chain.then(function () {
+        var t = performance.now();
+        return probe.getStats().then(function () { times.push(Math.round(performance.now() - t)); },
+          function () { times.push(-1); });
+      });
+    }
+    return chain.then(function () {
+      times.sort(function (a, b) { return a - b; });
+      var med = times[Math.floor(times.length / 2)];
+      var row = { stage: label, connections: pcs.length, min: times[0], median: med, max: times[times.length - 1] };
+      R.stages.push(row);
+      say("stage", row);
+      return row;
+    });
+  }
+  function fire(n) {
+    var t = performance.now();
+    var jobs = [];
+    for (var i = 0; i < n; i++) {
+      var pc = pcs[1 + (i % Math.max(1, pcs.length - 1))];
+      try {
+        jobs.push(pc.addIceCandidate({
+          candidate: "candidate:1 1 udp 2130706431 192.168.0.200 " + (50000 + (i % 120)),
+          sdpMid: "0", sdpMLineIndex: 0
+        }).then(function () { }, function () { }));
+      } catch (e) { /* ignore */ }
+    }
+    return Promise.all(jobs).then(function () { return Math.round(performance.now() - t); });
+  }
+
+  (function run() {
+    return add(10).then(function () { return measure("readers only (10)"); })
+      .then(function () { return add(32); })
+      .then(function () { return measure("+32 sources (42)"); })
+      .then(function () { return add(32); })
+      .then(function () { return measure("+32 sources (74)"); })
+      .then(function () { return add(64); })
+      .then(function () { return measure("+64 sources (138)"); })
+      .then(function () { return add(32); })
+      .then(function () { return measure("+32 sources (170)"); })
+      .then(function () { return sleep(250).then(function () { return fire(120); }); })
+      .then(function (ms) {
+        say("fired 120 checks in " + ms + " ms; measuring while they are in flight");
+        var measuring = measure("170 connections, 120 checks in flight");
+        return Promise.all([measuring, fire(240), fire(240)]);
+      })
+      .then(function () {
+        R.ok = true;
+        say("done", "see stages above");
+      })
+      .catch(function (err) {
+        R.error = String(err && err.message ? err.message : err);
+        say("error", R.error);
+      });
+  })();
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+})();
+</script>
+</body>
+</html>

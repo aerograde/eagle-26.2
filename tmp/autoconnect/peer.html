@@ -1,0 +1,82 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>AutoConnect peer</title></head>
+<body>
+<pre id="out" style="font:12px monospace;white-space:pre-wrap"></pre>
+<script src="../../target_teavm_wasm_gc/src/web/autoconnect.js"></script>
+<script>
+(function () {
+  "use strict";
+  var params = new URLSearchParams(location.search || "");
+  var name = params.get("name") || "peer";
+  var result = {
+    name: name, state: "starting", status: "", logs: [], events: [],
+    messages: [], terminal: false, failure: null
+  };
+  window.__result = result;
+
+  var engine = window.__eaglerAC;
+  if (!engine) { result.state = "no-engine"; result.terminal = true; return; }
+
+  // The invite/answer round trip the game performs over this channel: the host
+  // sends an offer-shaped payload, the guest answers, and the host confirms.
+  // (The game's own codec lives in DirectConnectCodec on the Java side; this
+  // proves the channel carries the pair, not the codec.)
+  var inviteCode = null;
+  var inviteAnswered = false;
+  engine.onEvent(function (event) {
+    result.events.push(event);
+    if (event.type === "connected") {
+      engine.send("hello-from-" + name);
+      if (name === "alice") {
+        inviteCode = "EGC-o-" + Math.random().toString(36).slice(2, 12);
+        result.inviteSent = inviteCode;
+        engine.send("invite:" + inviteCode);
+      }
+    } else if (event.type === "message") {
+      var data = String(event.data);
+      result.messages.push(data);
+      if (data.indexOf("invite:") === 0) {
+        engine.send("answer:EGC-a-" + data.slice(7).replace(/[^A-Za-z0-9-]/g, "").slice(0, 8));
+      } else if (data.indexOf("answer:") === 0) {
+        result.answerReceived = data.slice(7);
+        inviteAnswered = result.answerReceived.indexOf("EGC-a-") === 0;
+        result.inviteAnswerComplete = inviteAnswered;
+      } else if (data.indexOf("echo-") !== 0) {
+        engine.send("echo-" + data);
+      }
+    } else if (event.type === "failed") {
+      result.failure = event.reason;
+      result.terminal = true;
+    }
+  });
+
+  // ?code=ABCDEF starts both peers from one shared code: the plan's tier-two
+  // path, in which credential derivation synchronizes the two sides.
+  var code = params.get("code");
+  if (code) {
+    result.enteredCode = code;
+    engine.enterCode(code);
+  } else {
+    engine.start({ name: name });
+  }
+
+  window.setInterval(function () {
+    result.state = engine.state();
+    result.status = engine.status();
+    result.peers = engine.peers();
+    result.self = engine.self();
+    if (result.state === "connected" || result.state === "failed" || result.state === "stopped") {
+      // Give the message exchange a moment before declaring the run finished.
+      if (!result.terminal) {
+        result.terminal = true;
+        result.outcomeMs = Date.now() - result.startedAt;
+      }
+    }
+  }, 200);
+  result.startedAt = Date.now();
+  window.setTimeout(function () { result.terminal = true; }, 240000);
+})();
+</script>
+</body>
+</html>

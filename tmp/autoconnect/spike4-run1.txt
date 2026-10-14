@@ -1,0 +1,99 @@
+URL: http://127.0.0.1:8123/spike4.html
+CONSOLE: [spike] BEGIN: C
+CONSOLE: [spike] C:listener: {"address":"63fd3d80-8b38-4e66-93f7-9baed7f48651.local","port":59161,"line":"a=candidate:389481460 1 udp 2113937151 63fd3d80-8b38-4e66-93f7-9baed7f48651.local 59161 typ host generation 0 network-cost 999"}
+CONSOLE: [spike] C:listener-after: {"requestsReceived":0,"remotes":[]}
+CONSOLE: [spike] C:sender-pairs: [{"state":"in-progress","sent":14,"recv":0,"remote":"192.168.0.255:59161/host@2130706431"},{"state":"in-progress","sent":14,"recv":0,"remote":"192.168.1.255:59161/host@2130706431"},{"state":"in-progress","sent":13,"recv":0,"remote":"10.0.0.255:59161/host@2130706431"}]
+CONSOLE: [spike] C:verdict: no inbound check arrived
+CONSOLE: [spike] BEGIN: D
+CONSOLE: [spike] D:listener: {"address":"63fd3d80-8b38-4e66-93f7-9baed7f48651.local","port":61054,"line":"a=candidate:8389082 1 udp 2113937151 63fd3d80-8b38-4e66-93f7-9baed7f48651.local 61054 typ host generation 0 network-cost 999"}
+CONSOLE: [spike] D:sender-pairs: [{"state":"succeeded","sent":5,"recv":5,"remote":":61054/host@2130706431"}]
+CONSOLE: [spike] D:listener: {"requestsReceived":5,"remotes":[{"type":"prflx","port":62472,"prio":1845501695}]}
+CONSOLE: [spike] D:sender-remotes: [{"address":"","ip":"","port":61054,"type":"host"}]
+CONSOLE: [spike] D:verdict: connected
+=== RESULT ===
+{
+  "ok": true,
+  "error": null,
+  "steps": {
+    "listenerOwnCandidate": {
+      "address": "63fd3d80-8b38-4e66-93f7-9baed7f48651.local",
+      "port": 59161,
+      "line": "a=candidate:389481460 1 udp 2113937151 63fd3d80-8b38-4e66-93f7-9baed7f48651.local 59161 typ host generation 0 network-cost 999"
+    },
+    "broadcastListener": {
+      "requestsReceived": 0,
+      "remotes": []
+    },
+    "broadcastSender": [
+      {
+        "state": "in-progress",
+        "sent": 14,
+        "recv": 0,
+        "remote": "192.168.0.255:59161/host@2130706431"
+      },
+      {
+        "state": "in-progress",
+        "sent": 14,
+        "recv": 0,
+        "remote": "192.168.1.255:59161/host@2130706431"
+      },
+      {
+        "state": "in-progress",
+        "sent": 13,
+        "recv": 0,
+        "remote": "10.0.0.255:59161/host@2130706431"
+      }
+    ],
+    "nameTarget": "63fd3d80-8b38-4e66-93f7-9baed7f48651.local",
+    "nameSenderPairs": [
+      {
+        "state": "succeeded",
+        "sent": 5,
+        "recv": 5,
+        "remote": ":61054/host@2130706431"
+      }
+    ],
+    "nameListener": {
+      "requestsReceived": 5,
+      "remotes": [
+        {
+          "type": "prflx",
+          "port": 62472,
+          "prio": 1845501695
+        }
+      ]
+    },
+    "nameSenderRemotes": [
+      {
+        "address": "",
+        "ip": "",
+        "port": 61054,
+        "type": "host"
+      }
+    ]
+  },
+  "logs": [
+    "BEGIN: C",
+    "C:listener: {\"address\":\"63fd3d80-8b38-4e66-93f7-9baed7f48651.local\",\"port\":59161,\"line\":\"a=candidate:389481460 1 udp 2113937151 63fd3d80-8b38-4e66-93f7-9baed7f48651.local 59161 typ host generation 0 network-cost 999\"}",
+    "C:listener-after: {\"requestsReceived\":0,\"remotes\":[]}",
+    "C:sender-pairs: [{\"state\":\"in-progress\",\"sent\":14,\"recv\":0,\"remote\":\"192.168.0.255:59161/host@2130706431\"},{\"state\":\"in-progress\",\"sent\":14,\"recv\":0,\"remote\":\"192.168.1.255:59161/host@2130706431\"},{\"state\":\"in-progress\",\"sent\":13,\"recv\":0,\"remote\":\"10.0.0.255:59161/host@2130706431\"}]",
+    "C:verdict: no inbound check arrived",
+    "BEGIN: D",
+    "D:listener: {\"address\":\"63fd3d80-8b38-4e66-93f7-9baed7f48651.local\",\"port\":61054,\"line\":\"a=candidate:8389082 1 udp 2113937151 63fd3d80-8b38-4e66-93f7-9baed7f48651.local 61054 typ host generation 0 network-cost 999\"}",
+    "D:sender-pairs: [{\"state\":\"succeeded\",\"sent\":5,\"recv\":5,\"remote\":\":61054/host@2130706431\"}]",
+    "D:listener: {\"requestsReceived\":5,\"remotes\":[{\"type\":\"prflx\",\"port\":62472,\"prio\":1845501695}]}",
+    "D:sender-remotes: [{\"address\":\"\",\"ip\":\"\",\"port\":61054,\"type\":\"host\"}]",
+    "D:verdict: connected"
+  ]
+}
+Starting server 1/1: python3 -m http.server 8123 --directory /Users/rohan/eagle/project/tmp/autoconnect
+Waiting for server on port 8123...
+Server ready on port 8123
+
+All 1 server(s) ready
+Running: /tmp/webtest-venv/bin/python tmp/autoconnect/run-spike.py 8123 spike4.html  200000
+
+
+Stopping 1 server(s)...
+Server 1 stopped
+All servers stopped

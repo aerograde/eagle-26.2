@@ -1,0 +1,230 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>AutoConnect feasibility measurements</title></head>
+<body>
+<pre id="out" style="font:12px monospace;white-space:pre-wrap"></pre>
+<script>
+(function () {
+  "use strict";
+  var UFRAG = "AC24aa", PWD = "AC24shared7xpadded000000";
+  var out = document.getElementById("out");
+  var RESULT = { ok: false, error: null, steps: {}, logs: [] };
+  window.__spike = RESULT;
+
+  function say(k, m) {
+    var line = k + ": " + (typeof m === "string" ? m : JSON.stringify(m));
+    RESULT.logs.push(line);
+    console.log("[spike] " + line);
+    out.textContent += line + "\n";
+  }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function dummyFp() { var p = []; for (var i = 0; i < 32; i++) p.push("AB"); return p.join(":"); }
+  function munge(sdp) {
+    return sdp.replace(/a=ice-ufrag:[^\r\n]*/g, "a=ice-ufrag:" + UFRAG)
+              .replace(/a=ice-pwd:[^\r\n]*/g, "a=ice-pwd:" + PWD);
+  }
+  function forgeAnswer(localSdp) {
+    var lines = String(localSdp).split(/\r\n|\n/), kept = [];
+    for (var i = 0; i < lines.length; i++) {
+      var L = lines[i].replace(/\r$/, "");
+      if (L === "") continue;
+      if (/^a=candidate:/.test(L)) continue;
+      if (/^a=ice-ufrag:/.test(L)) { kept.push("a=ice-ufrag:" + UFRAG); continue; }
+      if (/^a=ice-pwd:/.test(L)) { kept.push("a=ice-pwd:" + PWD); continue; }
+      if (/^a=fingerprint:/.test(L)) { kept.push("a=fingerprint:sha-256 " + dummyFp()); continue; }
+      if (/^a=setup:/.test(L)) { kept.push("a=setup:passive"); continue; }
+      kept.push(L);
+    }
+    return kept.join("\r\n") + "\r\n";
+  }
+  function makeSharedPc(withChannel) {
+    var pc = new RTCPeerConnection({ iceServers: [] });
+    if (withChannel) pc.createDataChannel("probe", { ordered: true });
+    return pc.createOffer().then(function (offer) {
+      return pc.setLocalDescription({ type: "offer", sdp: munge(offer.sdp) });
+    }).then(function () {
+      return pc.setRemoteDescription({ type: "answer", sdp: forgeAnswer(pc.localDescription.sdp) });
+    }).then(function () { return pc; });
+  }
+  function udpPorts(pc) {
+    return pc.getStats().then(function (stats) {
+      var ports = [];
+      stats.forEach(function (s) {
+        if (s.type === "local-candidate" && s.protocol === "udp") ports.push(s.port);
+      });
+      return ports;
+    });
+  }
+  function sentTotal(pc) {
+    return pc.getStats().then(function (stats) {
+      var total = 0, pairs = 0;
+      stats.forEach(function (s) {
+        if (s.type === "candidate-pair") { total += (s.requestsSent || 0); pairs++; }
+      });
+      return { sent: total, pairs: pairs };
+    });
+  }
+  function cand(ip, port) {
+    return { candidate: "candidate:1 1 udp 2130706431 " + ip + " " + port + " typ host", sdpMid: "0", sdpMLineIndex: 0 };
+  }
+
+  // E6: how fast does Chrome send connectivity checks for a batch of remote candidates?
+  function measureScanThroughput() {
+    return makeSharedPc(true).then(function (pc) {
+      var ips = [];
+      for (var i = 1; i <= 254; i++) ips.push("192.168.0." + i);
+      return sentTotal(pc).then(function (before) {
+        var t0 = performance.now();
+        var adds = ips.map(function (ip) { return pc.addIceCandidate(cand(ip, 40001)).catch(function () { return null; }); });
+        return Promise.all(adds).then(function () {
+          var addMs = performance.now() - t0;
+          var samples = [];
+          return (function sample(step) {
+            if (step > 10) return Promise.resolve();
+            return sentTotal(pc).then(function (s) {
+              samples.push({ ms: Math.round(performance.now() - t0), sent: s.sent - before.sent, pairs: s.pairs });
+              return sleep(1000).then(function () { return sample(step + 1); });
+            });
+          })(1).then(function () {
+            RESULT.steps.scan254 = { addMs: Math.round(addMs), samples: samples };
+            say("E6", "254 candidates: addIceCandidate batch " + Math.round(addMs) + "ms, checks sent over time=" + JSON.stringify(samples));
+          });
+        });
+      });
+    });
+  }
+
+  // E7: can we learn our own LAN address by resolving our own mDNS candidate?
+  function measureSelfAddress() {
+    return makeSharedPc(true).then(function (pc) {
+      var sdp = pc.localDescription.sdp || "";
+      var m = /a=candidate:\S+ \d+ \S+ \d+ ([0-9a-f-]+\.local) (\d+) typ host/.exec(sdp);
+      RESULT.steps.ownMdnsCandidate = m ? (m[1] + ":" + m[2]) : null;
+      say("E7", "own mDNS candidate in SDP: " + RESULT.steps.ownMdnsCandidate);
+      if (!m) return null;
+      var name = m[1], port = parseInt(m[2], 10);
+      // Ask Chrome to resolve our own mDNS name, then read the resolved address.
+      return pc.addIceCandidate({
+        candidate: "candidate:1 1 udp 2130706431 " + name + " " + port + " typ host",
+        sdpMid: "0", sdpMLineIndex: 0
+      }).then(function () { return sleep(2500); }).then(function () {
+        return pc.getStats().then(function (stats) {
+          var remotes = [];
+          stats.forEach(function (s) {
+            if (s.type === "remote-candidate") {
+              remotes.push({ type: s.candidateType, address: s.address, ip: s.ip, port: s.port });
+            }
+          });
+          RESULT.steps.selfAddressResolution = remotes;
+          say("E7-result", remotes);
+        });
+      });
+    });
+  }
+
+  // E8: cost of the port lottery - how long a fresh munged connection costs and
+  // which ephemeral ports the OS hands out.
+  function measurePortLottery() {
+    var N = 40, ports = [], times = [];
+    var t0 = performance.now();
+    function one(i) {
+      if (i >= N) return Promise.resolve();
+      var s = performance.now();
+      return makeSharedPc(true).then(function (pc) {
+        return udpPorts(pc).then(function (p) {
+          times.push(Math.round(performance.now() - s));
+          for (var k = 0; k < p.length; k++) ports.push(p[k]);
+          pc.close();
+        });
+      }).then(function () { return one(i + 1); });
+    }
+    return one(0).then(function () {
+      var totalMs = Math.round(performance.now() - t0);
+      var sorted = ports.slice().sort(function (a, b) { return a - b; });
+      var ranges = { "in-50000-50063": 0, "in-50000-51023": 0, "below-49152": 0, "above-51023": 0 };
+      for (var i = 0; i < ports.length; i++) {
+        var p = ports[i];
+        if (p >= 50000 && p <= 50063) ranges["in-50000-50063"]++;
+        if (p >= 50000 && p <= 51023) ranges["in-50000-51023"]++;
+        if (p < 49152) ranges["below-49152"]++;
+        if (p > 51023) ranges["above-51023"]++;
+      }
+      RESULT.steps.portLottery = {
+        connections: N,
+        totalMs: totalMs,
+        avgConnMs: times.reduce(function (a, b) { return a + b; }, 0) / times.length,
+        portsPerConnection: ports.length / N,
+        min: sorted[0], max: sorted[sorted.length - 1],
+        ranges: ranges
+      };
+      say("E8", RESULT.steps.portLottery);
+    });
+  }
+
+  // E8b: does a parallel batch of fresh connections land a useful number of
+  // ports inside a narrow range?
+  function measurePortLotteryParallel() {
+    var BATCH = 64, attempts = 4, hits = [], batchMs = [];
+    function batch(b) {
+      if (b >= attempts) return Promise.resolve();
+      var t0 = performance.now();
+      var pcs = [];
+      var creations = [];
+      for (var i = 0; i < BATCH; i++) {
+        (function () {
+          creations.push(makeSharedPc(true).then(function (pc) { pcs.push(pc); }));
+        })();
+      }
+      return Promise.all(creations).then(function () {
+        var chain = Promise.resolve();
+        pcs.forEach(function (pc) {
+          chain = chain.then(function () {
+            return udpPorts(pc).then(function (p) {
+              for (var k = 0; k < p.length; k++) if (p[k] >= 50000 && p[k] <= 51023) hits.push(p[k]);
+              pc.close();
+            });
+          });
+        });
+        return chain;
+      }).then(function () {
+        batchMs.push(Math.round(performance.now() - t0));
+        return batch(b + 1);
+      });
+    }
+    return batch(0).then(function () {
+      RESULT.steps.portLotteryParallel = {
+        batches: attempts, batchSize: BATCH, batchMs: batchMs,
+        hitsInRange: hits.length, hits: hits.slice(0, 20),
+        expectedPerBatch: (BATCH * 2 * 1024 / 16384).toFixed(2)
+      };
+      say("E8b", RESULT.steps.portLotteryParallel);
+    });
+  }
+
+  function run() {
+    var params = new URLSearchParams(location.search || "");
+    var only = params.get("only");
+    var steps = [
+      ["E7", measureSelfAddress],
+      ["E6", measureScanThroughput],
+      ["E8", measurePortLottery],
+      ["E8b", measurePortLotteryParallel]
+    ];
+    return steps.reduce(function (chain, entry) {
+      return chain.then(function () {
+        if (only && only !== entry[0]) return null;
+        say("BEGIN", entry[0]);
+        return entry[1]();
+      });
+    }, Promise.resolve()).then(function () {
+      RESULT.ok = true;
+    }).catch(function (err) {
+      RESULT.error = String(err && err.message ? err.message : err);
+      say("ERROR", RESULT.error);
+    });
+  }
+  try { run(); } catch (e) { RESULT.error = String(e); say("THROW", RESULT.error); }
+})();
+</script>
+</body>
+</html>

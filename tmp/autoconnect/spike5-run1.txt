@@ -1,0 +1,26 @@
+URL: http://127.0.0.1:8123/spike5.html
+CONSOLE: [spike] start: payload length 91
+CONSOLE: [spike] listener: {"address":"b77761f7-7a41-4e6a-aea3-65b07c151ed9.local","port":61035}
+CONSOLE: [spike] ERROR: Failed to execute 'setLocalDescription' on 'RTCPeerConnection': Failed to set local offer sdp: Failed to apply the description for m= section with mid='0': Invalid ICE parameters: ICE ufrag must contain only alphanumeric characters, '+', and '/'.
+=== RESULT ===
+{
+  "ok": false,
+  "error": "Failed to execute 'setLocalDescription' on 'RTCPeerConnection': Failed to set local offer sdp: Failed to apply the description for m= section with mid='0': Invalid ICE parameters: ICE ufrag must contain only alphanumeric characters, '+', and '/'.",
+  "steps": {},
+  "logs": [
+    "start: payload length 91",
+    "listener: {\"address\":\"b77761f7-7a41-4e6a-aea3-65b07c151ed9.local\",\"port\":61035}",
+    "ERROR: Failed to execute 'setLocalDescription' on 'RTCPeerConnection': Failed to set local offer sdp: Failed to apply the description for m= section with mid='0': Invalid ICE parameters: ICE ufrag must contain only alphanumeric characters, '+', and '/'."
+  ]
+}
+Starting server 1/1: python3 -m http.server 8123 --directory /Users/rohan/eagle/project/tmp/autoconnect
+Waiting for server on port 8123...
+Server ready on port 8123
+
+All 1 server(s) ready
+Running: /tmp/webtest-venv/bin/python tmp/autoconnect/run-spike.py 8123 spike5.html  120000
+
+
+Stopping 1 server(s)...
+Server 1 stopped
+All servers stopped

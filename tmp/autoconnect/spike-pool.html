@@ -1,0 +1,127 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Does a big connection pool slow getStats?</title></head>
+<body>
+<pre id="out" style="font:12px monospace;white-space:pre-wrap"></pre>
+<script>
+/*
+ * Spike 11.  The engine's reader poll came back in 400+ ms for every reader once
+ * the page held its pool (175 sources + 40 scanners + 6 readers), while spike9
+ * measured 0-1 ms median on a page with a handful of connections.  Before the
+ * carrier is blamed, this measures the one variable that changed: the number of
+ * live RTCPeerConnections in the page.
+ *
+ * mode=pool&n=175   build n shared-credential connections (the engine's own
+ *                   makeSharedPc shape, with the port wait), then time 12
+ *                   getStats() calls: 6 on the first one, 6 on a fresh one
+ *                   created after the pool exists.
+ */
+(function () {
+  "use strict";
+  var params = new URLSearchParams(location.search || "");
+  var out = document.getElementById("out");
+  var R = { ok: false, error: null, n: 0, times: [], freshTimes: [], portsSeen: 0 };
+  window.__spike = R;
+  function say(k, m) {
+    var line = k + ": " + (typeof m === "string" ? m : JSON.stringify(m));
+    console.log("[spike11] " + line);
+    out.textContent += line + "\n";
+  }
+  var UFRAG = "AC24aa";
+  var PWD = "AC24shared7xpadded000000";
+  var W_START = 50000, W_END = 50511;
+  function munge(sdp) {
+    return sdp.replace(/a=ice-ufrag:[^\r\n]*/g, "a=ice-ufrag:" + UFRAG)
+      .replace(/a=ice-pwd:[^\r\n]*/g, "a=ice-pwd:" + PWD);
+  }
+  function dummy() { var p = []; for (var i = 0; i < 32; i++) p.push("AB"); return p.join(":"); }
+  function forge(localSdp) {
+    var lines = String(localSdp).split(/\r\n|\n/), kept = [];
+    for (var i = 0; i < lines.length; i++) {
+      var L = lines[i].replace(/\r$/, "");
+      if (L === "") continue;
+      if (/^a=candidate:/.test(L)) continue;
+      if (/^a=ice-ufrag:/.test(L)) { kept.push("a=ice-ufrag:" + UFRAG); continue; }
+      if (/^a=ice-pwd:/.test(L)) { kept.push("a=ice-pwd:" + PWD); continue; }
+      if (/^a=fingerprint:/.test(L)) { kept.push("a=fingerprint:sha-256 " + dummy()); continue; }
+      if (/^a=setup:/.test(L)) { kept.push("a=setup:passive"); continue; }
+      kept.push(L);
+    }
+    return kept.join("\r\n") + "\r\n";
+  }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function makePc() {
+    var pc = new RTCPeerConnection({});
+    pc.createDataChannel("probe", { ordered: true });
+    return pc.createOffer().then(function (o) {
+      return pc.setLocalDescription({ type: "offer", sdp: munge(o.sdp) });
+    }).then(function () {
+      return pc.setRemoteDescription({ type: "answer", sdp: forge(pc.localDescription.sdp) });
+    }).then(function () { return pc; });
+  }
+  function portsOf(pc) {
+    return pc.getStats().then(function (stats) {
+      var n = 0;
+      stats.forEach(function (s) { if (s.type === "local-candidate" && s.port) n++; });
+      return n;
+    }, function () { return 0; });
+  }
+  function timeIt(pc, label, into) {
+    var t0 = performance.now();
+    return pc.getStats().then(function (stats) {
+      var ms = performance.now() - t0;
+      var rows = 0;
+      stats.forEach(function () { rows++; });
+      into.push({ label: label, ms: Math.round(ms), stats: rows });
+    }, function (err) {
+      into.push({ label: label, ms: Math.round(performance.now() - t0), stats: -1, err: String(err) });
+    });
+  }
+
+  var n = parseInt(params.get("n") || "175", 10);
+  R.n = n;
+  var made = [];
+  function build() {
+    if (made.length >= n) return Promise.resolve();
+    var want = Math.min(24, n - made.length);
+    var jobs = [];
+    for (var i = 0; i < want; i++) jobs.push(makePc());
+    return Promise.all(jobs).then(function (pcs) {
+      return Promise.all(pcs.map(function (pc) {
+        return portsOf(pc).then(function (k) { R.portsSeen += k; made.push(pc); });
+      }));
+    }).then(function () {
+      console.log("[spike11] built " + made.length + "/" + n);
+      return build();
+    });
+  }
+
+  var t0 = performance.now();
+  build().then(function () {
+    say("pool-built", made.length + " connections in " + Math.round(performance.now() - t0) + " ms");
+    var chain = Promise.resolve();
+    for (var i = 0; i < 6; i++) {
+      chain = chain.then(function () { return timeIt(made[0], "pooled", R.times); });
+    }
+    return chain.then(function () {
+      return makePc().then(function (fresh) {
+        var c2 = Promise.resolve();
+        for (var j = 0; j < 6; j++) {
+          c2 = c2.then(function () { return timeIt(fresh, "fresh", R.freshTimes); });
+        }
+        return c2;
+      });
+    });
+  }).then(function () {
+    R.ok = true;
+    say("pooled getStats ms", R.times.map(function (x) { return x.ms; }));
+    say("fresh  getStats ms", R.freshTimes.map(function (x) { return x.ms; }));
+    say("stats-row counts", R.times.map(function (x) { return x.stats; }));
+  }).catch(function (err) {
+    R.error = String(err && err.message ? err.message : err);
+    say("error", R.error);
+  });
+})();
+</script>
+</body>
+</html>

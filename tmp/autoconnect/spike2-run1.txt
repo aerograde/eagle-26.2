@@ -1,0 +1,141 @@
+URL: http://127.0.0.1:8123/spike2.html
+CONSOLE: [spike] BEGIN: E7
+CONSOLE: [spike] E7: own mDNS candidate in SDP: null
+CONSOLE: [spike] BEGIN: E6
+CONSOLE: [spike] E6: 254 candidates: addIceCandidate batch 126ms, checks sent over time=[{"ms":147,"sent":0,"pairs":254},{"ms":1153,"sent":17,"pairs":254},{"ms":2159,"sent":33,"pairs":254},{"ms":3164,"sent":49,"pairs":254},{"ms":4169,"sent":65,"pairs":254},{"ms":5174,"sent":81,"pairs":254},{"ms":6179,"sent":97,"pairs":254},{"ms":7183,"sent":113,"pairs":254},{"ms":8188,"sent":129,"pairs":254},{"ms":9194,"sent":145,"pairs":254}]
+CONSOLE: [spike] BEGIN: E8
+CONSOLE: [spike] E8: {"connections":40,"totalMs":185,"avgConnMs":4.15,"portsPerConnection":0.275,"min":49252,"max":64623,"ranges":{"in-50000-50063":1,"in-50000-51023":1,"below-49152":0,"above-51023":9}}
+CONSOLE: [spike] BEGIN: E8b
+CONSOLE: [spike] E8b: {"batches":4,"batchSize":64,"batchMs":[520,664,586,592],"hitsInRange":31,"hits":[50634,50609,50079,50885,50638,50780,50749,50234,50974,51020,50198,50758,50035,50962,50571,50694,50076,50636,50452,50094],"expectedPerBatch":"8.00"}
+=== RESULT ===
+{
+  "ok": true,
+  "error": null,
+  "steps": {
+    "ownMdnsCandidate": null,
+    "scan254": {
+      "addMs": 126,
+      "samples": [
+        {
+          "ms": 147,
+          "sent": 0,
+          "pairs": 254
+        },
+        {
+          "ms": 1153,
+          "sent": 17,
+          "pairs": 254
+        },
+        {
+          "ms": 2159,
+          "sent": 33,
+          "pairs": 254
+        },
+        {
+          "ms": 3164,
+          "sent": 49,
+          "pairs": 254
+        },
+        {
+          "ms": 4169,
+          "sent": 65,
+          "pairs": 254
+        },
+        {
+          "ms": 5174,
+          "sent": 81,
+          "pairs": 254
+        },
+        {
+          "ms": 6179,
+          "sent": 97,
+          "pairs": 254
+        },
+        {
+          "ms": 7183,
+          "sent": 113,
+          "pairs": 254
+        },
+        {
+          "ms": 8188,
+          "sent": 129,
+          "pairs": 254
+        },
+        {
+          "ms": 9194,
+          "sent": 145,
+          "pairs": 254
+        }
+      ]
+    },
+    "portLottery": {
+      "connections": 40,
+      "totalMs": 185,
+      "avgConnMs": 4.15,
+      "portsPerConnection": 0.275,
+      "min": 49252,
+      "max": 64623,
+      "ranges": {
+        "in-50000-50063": 1,
+        "in-50000-51023": 1,
+        "below-49152": 0,
+        "above-51023": 9
+      }
+    },
+    "portLotteryParallel": {
+      "batches": 4,
+      "batchSize": 64,
+      "batchMs": [
+        520,
+        664,
+        586,
+        592
+      ],
+      "hitsInRange": 31,
+      "hits": [
+        50634,
+        50609,
+        50079,
+        50885,
+        50638,
+        50780,
+        50749,
+        50234,
+        50974,
+        51020,
+        50198,
+        50758,
+        50035,
+        50962,
+        50571,
+        50694,
+        50076,
+        50636,
+        50452,
+        50094
+      ],
+      "expectedPerBatch": "8.00"
+    }
+  },
+  "logs": [
+    "BEGIN: E7",
+    "E7: own mDNS candidate in SDP: null",
+    "BEGIN: E6",
+    "E6: 254 candidates: addIceCandidate batch 126ms, checks sent over time=[{\"ms\":147,\"sent\":0,\"pairs\":254},{\"ms\":1153,\"sent\":17,\"pairs\":254},{\"ms\":2159,\"sent\":33,\"pairs\":254},{\"ms\":3164,\"sent\":49,\"pairs\":254},{\"ms\":4169,\"sent\":65,\"pairs\":254},{\"ms\":5174,\"sent\":81,\"pairs\":254},{\"ms\":6179,\"sent\":97,\"pairs\":254},{\"ms\":7183,\"sent\":113,\"pairs\":254},{\"ms\":8188,\"sent\":129,\"pairs\":254},{\"ms\":9194,\"sent\":145,\"pairs\":254}]",
+    "BEGIN: E8",
+    "E8: {\"connections\":40,\"totalMs\":185,\"avgConnMs\":4.15,\"portsPerConnection\":0.275,\"min\":49252,\"max\":64623,\"ranges\":{\"in-50000-50063\":1,\"in-50000-51023\":1,\"below-49152\":0,\"above-51023\":9}}",
+    "BEGIN: E8b",
+    "E8b: {\"batches\":4,\"batchSize\":64,\"batchMs\":[520,664,586,592],\"hitsInRange\":31,\"hits\":[50634,50609,50079,50885,50638,50780,50749,50234,50974,51020,50198,50758,50035,50962,50571,50694,50076,50636,50452,50094],\"expectedPerBatch\":\"8.00\"}"
+  ]
+}
+Starting server 1/1: python3 -m http.server 8123 --directory /Users/rohan/eagle/project/tmp/autoconnect
+Waiting for server on port 8123...
+Server ready on port 8123
+
+All 1 server(s) ready
+Running: /tmp/webtest-venv/bin/python tmp/autoconnect/run-spike.py 8123 spike2.html  400000
+
+
+Stopping 1 server(s)...
+Server 1 stopped
+All servers stopped

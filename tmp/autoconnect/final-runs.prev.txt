@@ -1,0 +1,7 @@
+revision 1539ccb4a9b46b11f04e148fd0f7a39016270313253962d9d513f772a071e6cf
+--- run 1 start 08:32:23
+--- run 1 exit 0 at 08:36:31
+1539ccb4a9b46b11f04e148fd0f7a39016270313253962d9d513f772a071e6cf  target_teavm_wasm_gc/src/web/autoconnect.js
+--- run 2 start 08:36:31
+--- run 2 exit 0 at 08:40:39
+1539ccb4a9b46b11f04e148fd0f7a39016270313253962d9d513f772a071e6cf  target_teavm_wasm_gc/src/web/autoconnect.js

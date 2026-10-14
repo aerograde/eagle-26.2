@@ -1,0 +1,231 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>AutoConnect ICE spike</title></head>
+<body>
+<pre id="out" style="font:12px monospace;white-space:pre-wrap"></pre>
+<script>
+(function () {
+  "use strict";
+  var UFRAG = "AC24aa", PWD = "AC24shared7xpadded000000";
+  var out = document.getElementById("out");
+  var RESULT = { ok: false, error: null, steps: {}, logs: [] };
+  window.__spike = RESULT;
+
+  function say(k, m) {
+    var line = k + ": " + (typeof m === "string" ? m : JSON.stringify(m));
+    RESULT.logs.push(line);
+    console.log("[spike] " + line);
+    out.textContent += line + "\n";
+  }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function dummyFp() { var p = []; for (var i = 0; i < 32; i++) p.push("AB"); return p.join(":"); }
+
+  function munge(sdp) {
+    return sdp
+      .replace(/a=ice-ufrag:[^\r\n]*/g, "a=ice-ufrag:" + UFRAG)
+      .replace(/a=ice-pwd:[^\r\n]*/g, "a=ice-pwd:" + PWD);
+  }
+
+  function forgeAnswer(localSdp) {
+    var lines = String(localSdp).split(/\r\n|\n/);
+    var kept = [];
+    for (var i = 0; i < lines.length; i++) {
+      var L = lines[i].replace(/\r$/, "");
+      if (L === "") continue;
+      if (/^a=candidate:/.test(L)) continue;
+      if (/^a=ice-ufrag:/.test(L)) { kept.push("a=ice-ufrag:" + UFRAG); continue; }
+      if (/^a=ice-pwd:/.test(L)) { kept.push("a=ice-pwd:" + PWD); continue; }
+      if (/^a=fingerprint:/.test(L)) { kept.push("a=fingerprint:sha-256 " + dummyFp()); continue; }
+      if (/^a=setup:/.test(L)) { kept.push("a=setup:passive"); continue; }
+      kept.push(L);
+    }
+    return kept.join("\r\n") + "\r\n";
+  }
+
+  function makeSharedPc(withChannel) {
+    var pc = new RTCPeerConnection({ iceServers: [] });
+    if (withChannel) pc.createDataChannel("probe", { ordered: true });
+    return pc.createOffer().then(function (offer) {
+      return pc.setLocalDescription({ type: "offer", sdp: munge(offer.sdp) });
+    }).then(function () {
+      return pc.setRemoteDescription({ type: "answer", sdp: forgeAnswer(pc.localDescription.sdp) });
+    }).then(function () { return pc; });
+  }
+
+  function jsonStats(pc, types) {
+    return pc.getStats().then(function (stats) {
+      var rows = [];
+      stats.forEach(function (s) {
+        if (types.indexOf(s.type) < 0) return;
+        var clean = {};
+        for (var k in s) {
+          if (typeof s[k] === "function") continue;
+          clean[k] = s[k];
+        }
+        rows.push(clean);
+      });
+      return rows;
+    });
+  }
+
+  function candidateLine(ip, port) {
+    return "candidate:1 1 udp 2130706431 " + ip + " " + port + " typ host";
+  }
+
+  function run() {
+    var params = new URLSearchParams(location.search || "");
+    var ip = params.get("ip");
+    if (!ip) { RESULT.error = "missing ?ip="; return Promise.resolve(); }
+    var listener = null, scanner = null, listenerPort = 0;
+
+    say("start", "target ip " + ip);
+
+    return makeSharedPc(true).then(function (pc) {
+      listener = pc;
+      RESULT.steps.mungedLocalDescription = /a=ice-ufrag:AC24aa/.test(pc.localDescription.sdp)
+        && /a=ice-pwd:AC24shared7xpadded000000/.test(pc.localDescription.sdp);
+      RESULT.steps.forgedRemoteAnswerAccepted = true;
+      say("E1/E2", "munged local creds kept=" + RESULT.steps.mungedLocalDescription + ", forged answer accepted=true");
+      return sleep(800);
+    }).then(function () {
+      return jsonStats(listener, ["local-candidate"]);
+    }).then(function (rows) {
+      RESULT.steps.listenerLocalCandidates = rows.map(function (r) {
+        return { type: r.candidateType, protocol: r.protocol, address: r.address, port: r.port, relayProtocol: r.relayProtocol };
+      });
+      var udp = rows.filter(function (r) { return r.protocol === "udp"; })[0];
+      listenerPort = udp ? udp.port : 0;
+      say("E3", "listener udp port " + listenerPort);
+      if (!listenerPort) throw new Error("listener has no UDP port");
+      return makeSharedPc(true);
+    }).then(function (pc) {
+      scanner = pc;
+      var t0 = Date.now();
+      return scanner.addIceCandidate({ candidate: candidateLine(ip, listenerPort), sdpMid: "0", sdpMLineIndex: 0 })
+        .then(function () {
+          return (function poll() {
+            if (scanner.iceConnectionState === "connected" || scanner.iceConnectionState === "completed") {
+              RESULT.steps.scannerConnectMs = Date.now() - t0;
+              return true;
+            }
+            if (Date.now() - t0 > 8000) return false;
+            return sleep(50).then(poll);
+          })();
+        });
+    }).then(function (found) {
+      RESULT.steps.probeConnected = !!found;
+      say("E4", "scanner connected=" + found + (found ? " in " + RESULT.steps.scannerConnectMs + "ms" : ""));
+      return sleep(600);
+    }).then(function () {
+      return jsonStats(listener, ["candidate-pair", "remote-candidate"]).then(function (rows) {
+        RESULT.steps.listenerStatsRaw = rows;
+        say("E4-listener-raw", rows);
+      });
+    }).then(function () {
+      // ---------------------------------------------------------- E5: pulses
+      if (!RESULT.steps.probeConnected) { RESULT.steps.pulsesSkipped = "probe never connected"; return null; }
+
+      var POOL = 10, SLOT_MS = 150;
+      var bits = "10110011";
+      var pool = [];
+      var sends = [];
+
+      function buildNext() {
+        if (pool.length >= POOL) return Promise.resolve();
+        return makeSharedPc(true).then(function (pc) { pool.push(pc); return buildNext(); });
+      }
+
+      say("E5", "building " + POOL + " pulse connections (each with a data channel m-line)");
+      return buildNext().then(function () {
+        say("E5", "pool ready (" + pool.length + ")");
+        return jsonStats(listener, ["remote-candidate", "candidate-pair"]);
+      }).then(function (base) {
+        var seenRemote = Object.create(null);
+        var basePairs = Object.create(null);
+        base.forEach(function (s) {
+          if (s.type === "remote-candidate") seenRemote[s.id] = true;
+          if (s.type === "candidate-pair") basePairs[s.id] = s.requestsReceived || 0;
+        });
+        say("E5", "baseline remote candidates=" + Object.keys(seenRemote).length);
+        var t0 = Date.now();
+        var timeline = [];
+        var timer = setInterval(function () {
+          listener.getStats().then(function (stats) {
+            var at = Date.now() - t0;
+            stats.forEach(function (s) {
+              if (s.type === "remote-candidate" && !seenRemote[s.id]) {
+                seenRemote[s.id] = true;
+                timeline.push({ at: at, what: "new-remote", candType: s.candidateType, port: s.port, address: s.address });
+              }
+            });
+            var total = 0;
+            stats.forEach(function (s) { if (s.type === "candidate-pair") total += (s.requestsReceived || 0); });
+            timeline.push({ at: at, what: "tick", totalRequests: total });
+          });
+        }, 20);
+
+        return (function send(i) {
+          if (i >= bits.length) return Promise.resolve();
+          var at = t0 + (i + 1) * SLOT_MS;
+          var bit = bits.charAt(i);
+          return sleep(Math.max(0, at - Date.now())).then(function () {
+            if (bit !== "1") return null;
+            var pc = pool.pop();
+            if (!pc) { sends.push({ bit: i, result: "pool-empty" }); return null; }
+            return pc.addIceCandidate({ candidate: candidateLine(ip, listenerPort), sdpMid: "0", sdpMLineIndex: 0 })
+              .then(function () { sends.push({ bit: i, result: "added" }); },
+                    function (e) { sends.push({ bit: i, result: "rejected: " + (e && e.message) }); });
+          }).then(function () { return send(i + 1); });
+        })(0).then(function () {
+          return sleep(1200).then(function () {
+            clearInterval(timer);
+            RESULT.steps.pulsesSent = bits;
+            RESULT.steps.pulseSends = sends;
+            var pulseEvents = timeline.filter(function (e) { return e.what === "new-remote"; });
+            RESULT.steps.pulseTimeline = timeline.filter(function (e) { return e.what === "tick"; });
+            RESULT.steps.pulseRemoteEvents = pulseEvents;
+            var decoded = "";
+            for (var s = 0; s < bits.length; s++) {
+              var lo = s * SLOT_MS, hi = (s + 1) * SLOT_MS;
+              var hit = pulseEvents.some(function (e) { return e.at >= lo && e.at < hi; });
+              decoded += hit ? "1" : "0";
+            }
+            RESULT.steps.pulsesDecodedByPrflx = decoded;
+            say("E5-result", "sent=" + bits + " decoded=" + decoded + " sends=" + JSON.stringify(sends));
+            say("E5-remote-events", pulseEvents);
+          });
+        });
+      }).then(function () {
+        // What did the pulse senders themselves see?
+        var chain = Promise.resolve(), rows = [];
+        pool.concat(scanner ? [scanner] : []).forEach(function (pc) {
+          chain = chain.then(function () {
+            return jsonStats(pc, ["local-candidate", "candidate-pair"]).then(function (s) {
+              rows.push({
+                state: pc.iceConnectionState,
+                locals: s.filter(function (r) { return r.type === "local-candidate" && r.protocol === "udp"; })
+                         .map(function (r) { return r.port; }),
+                pairs: s.filter(function (r) { return r.type === "candidate-pair"; })
+                         .map(function (r) { return { state: r.state, sent: r.requestsSent, respRecv: r.responsesReceived }; })
+              });
+            });
+          });
+        });
+        return chain.then(function () {
+          RESULT.steps.senderStats = rows;
+          say("E5-senders", rows);
+        });
+      });
+    }).then(function () {
+      RESULT.ok = true;
+    }).catch(function (err) {
+      RESULT.error = String(err && err.message ? err.message : err);
+      say("ERROR", RESULT.error);
+    });
+  }
+
+  try { run(); } catch (e) { RESULT.error = String(e); say("THROW", RESULT.error); }
+})();
+</script>
+</body>
+</html>

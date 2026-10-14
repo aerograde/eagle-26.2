@@ -1,0 +1,145 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Remote certificate after a fingerprint mismatch</title></head>
+<body>
+<pre id="out" style="font:12px monospace;white-space:pre-wrap"></pre>
+<script>
+(function () {
+  "use strict";
+  var out = document.getElementById("out");
+  var R = { ok: false, error: null, steps: {} };
+  window.__spike = R;
+  function say(k, m) {
+    R.steps[k] = m;
+    var line = k + ": " + (typeof m === "string" ? m : JSON.stringify(m));
+    console.log("[spike8] " + line);
+    out.textContent += line + "\n";
+  }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  function certFingerprint(pc) {
+    return pc.getStats().then(function (stats) {
+      var out = [];
+      stats.forEach(function (s) {
+        if (s.type === "certificate") out.push(s.fingerprint || s.fingerprintAlgorithm || s.id);
+      });
+      return out;
+    }, function () { return []; });
+  }
+
+  // Every stat row that could carry a remote certificate, so nothing is missed.
+  function dumpRemoteCertStats(pc) {
+    return pc.getStats().then(function (stats) {
+      var rows = [];
+      stats.forEach(function (s) {
+        var copy = {};
+        Object.keys(s).forEach(function (k) {
+          var v = s[k];
+          if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") copy[k] = v;
+        });
+        copy.type = s.type;
+        copy.id = s.id;
+        if (s.type === "certificate" || s.type === "transport" ||
+            /cert/i.test(JSON.stringify(copy)) || /cert/i.test(s.id)) {
+          rows.push(copy);
+        }
+      });
+      return rows;
+    }, function (e) { return [{ error: String(e) }]; });
+  }
+
+  function makeAnswerer() {
+    var pc = new RTCPeerConnection({ iceServers: [] });
+    pc.createDataChannel("probe", { ordered: true });
+    return pc;
+  }
+
+  function run() {
+    // A: the offending side. It is given B's answer with a deliberately wrong
+    // fingerprint, which is exactly the situation the engine forges today.
+    var a = new RTCPeerConnection({ iceServers: [] });
+    var aChannel = a.createDataChannel("spike", { ordered: true });
+    var b = makeAnswerer();
+    var realBFp = "";
+    var wrongFp = "";
+    var aCands = [];
+    var bCands = [];
+    a.onicecandidate = function (e) { if (e.candidate) aCands.push(e.candidate.candidate); };
+    b.onicecandidate = function (e) { if (e.candidate) bCands.push(e.candidate.candidate); };
+    a.onconnectionstatechange = function () { say("a-state-" + Date.now(), a.connectionState); };
+    b.onconnectionstatechange = function () { say("b-state-" + Date.now(), b.connectionState); };
+
+    return a.createOffer().then(function (o) { return a.setLocalDescription(o); })
+      .then(function () { return b.setRemoteDescription(a.localDescription); })
+      .then(function () { return b.createAnswer(); })
+      .then(function (ans) { return b.setLocalDescription(ans).then(function () { return ans; }); })
+      .then(function (ans) {
+        return certFingerprint(b).then(function (fps) {
+          realBFp = fps[0] || "";
+          say("b-certificate-fingerprints", fps);
+          // B is the answerer, so the answer carries B's fingerprint. Forge it.
+          var hex = realBFp.replace(/:/g, "");
+          var flipped = (parseInt(hex.slice(-2), 16) ^ 0xff).toString(16);
+          if (flipped.length < 2) flipped = "0" + flipped;
+          wrongFp = realBFp.slice(0, -2) + flipped.toUpperCase();
+          say("forged-fingerprint", wrongFp);
+          var forged = String(ans.sdp).replace(/a=fingerprint:[^\r\n]*/,
+            "a=fingerprint:sha-256 " + wrongFp);
+          if (forged.indexOf(wrongFp) === -1) say("forge-failed", true);
+          return a.setRemoteDescription({ type: "answer", sdp: forged });
+        });
+      })
+      .then(function () {
+        // Real candidates both ways: the ICE layer must reach connected, then
+        // DTLS must fail on the fingerprint. That is the moment we probe stats.
+        aCands.forEach(function (c) {
+          try { b.addIceCandidate({ candidate: c, sdpMid: "0", sdpMLineIndex: 0 }); } catch (e) { }
+        });
+        bCands.forEach(function (c) {
+          try { a.addIceCandidate({ candidate: c, sdpMid: "0", sdpMLineIndex: 0 }); } catch (e) { }
+        });
+        // Keep feeding new local candidates as they trickle in.
+        var feed = window.setInterval(function () {
+          while (aCands.length) {
+            var c = aCands.shift();
+            try { b.addIceCandidate({ candidate: c, sdpMid: "0", sdpMLineIndex: 0 }); } catch (e) { }
+          }
+          while (bCands.length) {
+            var c2 = bCands.shift();
+            try { a.addIceCandidate({ candidate: c2, sdpMid: "0", sdpMLineIndex: 0 }); } catch (e) { }
+          }
+        }, 50);
+        var probes = [];
+        var until = Date.now() + 20000;
+        return (function probe(n) {
+          return dumpRemoteCertStats(a).then(function (rows) {
+            var last = probes[probes.length - 1];
+            var changed = !last || last.aState !== a.connectionState ||
+              last.bState !== b.connectionState || JSON.stringify(rows) !== JSON.stringify(last.rows);
+            if (changed) say("probe-" + n, { aState: a.connectionState, bState: b.connectionState, rows: rows });
+            probes.push({ n: n, aState: a.connectionState, bState: b.connectionState, rows: rows });
+            if (Date.now() > until || a.connectionState === "failed") {
+              window.clearInterval(feed);
+              return null;
+            }
+            return sleep(400).then(function () { return probe(n + 1); });
+          });
+        })(0).then(function () {
+          var finalA = probes[probes.length - 1];
+          say("real-b-fingerprint", realBFp);
+          var found = JSON.stringify(finalA.rows);
+          say("remoteFingerprintVisible", found.indexOf(realBFp.replace(/:/g, "")) !== -1
+            || found.toUpperCase().indexOf(realBFp.toUpperCase()) !== -1);
+          say("aState", a.connectionState);
+          say("bState", b.connectionState);
+          say("a-transport-ice", a.iceConnectionState);
+        });
+      });
+  }
+
+  run().then(function () { R.ok = true; },
+    function (e) { R.error = String(e && e.message ? e.message : e); });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,32 @@
+ok   module installs and reports a version
+ok   bridge entry points exist
+ok   snapshot parses
+ok   snapshot starts idle in phase 0
+ok   snapshot carries the plan's 20 s fallback budget
+ok   snapshot has a peer array
+ok   fallback is not raised before start
+ok   sendJson is false without an open channel
+ok   empty event queue drains to []
+ok   a malformed code is rejected
+ok   a good code is accepted
+[autoconnect +0ms] code: code mode: both peers derive the same credentials from the shared code
+[autoconnect +0ms] boot: peer id 2d99 (player-2d99) [code mode]
+[autoconnect +0ms] error: no WebRTC in this harness
+ok   both peers derive the same ufrag
+ok   both peers derive the same pwd
+ok   another code derives other credentials
+ok   ufrag fits the shape Chrome validates
+ok   pwd fits the 22-256 characters Chrome requires
+ok   derived credentials are not the shared constants
+ok   newCode returns six characters of the code alphabet
+ok   newCode applies the code
+ok   snapshot reports code mode with the code
+[autoconnect +0ms] boot: peer id 2d99 (alice) [code mode]
+ok   startJson accepts options
+[autoconnect +1ms] error: no WebRTC in this harness
+[autoconnect +1ms] code: code mode: both peers derive the same credentials from the shared code
+ok   events drain as a JSON array
+ok   the queue is empty after draining
+ok   a missing WebRTC implementation ends in a reported failure, not a throw
+
+all checks passed

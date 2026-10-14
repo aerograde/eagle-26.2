@@ -1,0 +1,107 @@
+URL: http://127.0.0.1:8128/tmp/autoconnect/spike8.html
+CONSOLE: [spike8] b-certificate-fingerprints: ["1E:FB:FA:4A:30:32:D6:15:2E:FC:78:0A:A9:EF:35:6F:3D:8D:C3:9D:AA:F6:5B:83:61:62:B7:1B:F8:6B:11:78"]
+CONSOLE: [spike8] forged-fingerprint: 1E:FB:FA:4A:30:32:D6:15:2E:FC:78:0A:A9:EF:35:6F:3D:8D:C3:9D:AA:F6:5B:83:61:62:B7:1B:F8:6B:11:87
+CONSOLE: [spike8] probe-0: {"aState":"new","bState":"new","rows":[{"id":"CF6D:2A:AB:AB:E3:A2:3E:CC:F4:2F:BF:CF:5B:F0:C4:C5:B0:9D:49:C0:B4:8B:81:D7:5B:2A:27:D9:AA:32:CB:17","timestamp":1791854903173.685,"type":"certificate","base64Certificate":"MIIBFjCBvaADAgECAgkAtmbm/wcVyZwwCgYIKoZIzj0EAwIwETEPMA0GA1UEAwwGV2ViUlRDMB4XDTI2MTAxMjAxMjgyM1oXDTI2MTExMjAxMjgyM1owETEPMA0GA1UEAwwGV2ViUlRDMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEH3gVSDfdHjLhV4TJZxCzQDpiA6TZ89OoN7JyfvGgzm7cs9/E9sYcprW3JitctLjAsnZgBwSspvEhTKAp5lV9UjAKBggqhkjOPQQDAgNIADBFAiAqjpw3ikZRxUjIleETFrB3EJT3TLQFy9CTasSmB8C9UwIhAImLYXeOQN2u4NlUM73dkQnhwONIwjzZB8p9KgN8OTI8","fingerprint":"6D:2A:AB:AB:E3:A2:3E:CC:F4:2F:BF:CF:5B:F0:C4:C5:B0:9D:49:C0:B4:8B:81:D7:5B:2A:27:D9:AA:32:CB:17","fingerprintAlgorithm":"sha-256"},{"id":"T01","timestamp":1791854903173.685,"type":"transport","bytesReceived":0,"bytesSent":0,"dtlsRole":"server","dtlsState":"new","iceLocalUsernameFragment":"mRsq","iceRole":"controlling","iceState":"new","localCertificateId":"CF6D:2A:AB:AB:E3:A2:3E:CC:F4:2F:BF:CF:5B:F0:C4:C5:B0:9D:49:C0:B4:8B:81:D7:5B:2A:27:D9:AA:32:CB:17","packetsReceived":0,"packetsSent":0,"selectedCandidatePairChanges":0}]}
+CONSOLE: [spike8] b-state-1791854903273: connecting
+CONSOLE: [spike8] b-state-1791854903273: connected
+CONSOLE: [spike8] a-state-1791854903274: connecting
+CONSOLE: [spike8] a-state-1791854903275: failed
+CONSOLE: [spike8] b-state-1791854903276: failed
+CONSOLE: [spike8] probe-1: {"aState":"failed","bState":"failed","rows":[{"id":"CF6D:2A:AB:AB:E3:A2:3E:CC:F4:2F:BF:CF:5B:F0:C4:C5:B0:9D:49:C0:B4:8B:81:D7:5B:2A:27:D9:AA:32:CB:17","timestamp":1791854903630.361,"type":"certificate","base64Certificate":"MIIBFjCBvaADAgECAgkAtmbm/wcVyZwwCgYIKoZIzj0EAwIwETEPMA0GA1UEAwwGV2ViUlRDMB4XDTI2MTAxMjAxMjgyM1oXDTI2MTExMjAxMjgyM1owETEPMA0GA1UEAwwGV2ViUlRDMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEH3gVSDfdHjLhV4TJZxCzQDpiA6TZ89OoN7JyfvGgzm7cs9/E9sYcprW3JitctLjAsnZgBwSspvEhTKAp5lV9UjAKBggqhkjOPQQDAgNIADBFAiAqjpw3ikZRxUjIleETFrB3EJT3TLQFy9CTasSmB8C9UwIhAImLYXeOQN2u4NlUM73dkQnhwONIwjzZB8p9KgN8OTI8","fingerprint":"6D:2A:AB:AB:E3:A2:3E:CC:F4:2F:BF:CF:5B:F0:C4:C5:B0:9D:49:C0:B4:8B:81:D7:5B:2A:27:D9:AA:32:CB:17","fingerprintAlgorithm":"sha-256"},{"id":"T01","timestamp":1791854903630.361,"type":"transport","bytesReceived":762,"bytesSent":653,"dtlsRole":"server","dtlsState":"failed","iceLocalUsernameFragment":"mRsq","iceRole":"controlling","iceState":"connected","localCertificateId":"CF6D:2A:AB:AB:E3:A2:3E:CC:F4:2F:BF:CF:5B:F0:C4:C5:B0:9D:49:C0:B4:8B:81:D7:5B:2A:27:D9:AA:32:CB:17","packetsReceived":4,"packetsSent":2,"selectedCandidatePairChanges":1,"selectedCandidatePairId":"CPfrRS8CYb_VHVjkBz7"}]}
+CONSOLE: [spike8] real-b-fingerprint: 1E:FB:FA:4A:30:32:D6:15:2E:FC:78:0A:A9:EF:35:6F:3D:8D:C3:9D:AA:F6:5B:83:61:62:B7:1B:F8:6B:11:78
+CONSOLE: [spike8] remoteFingerprintVisible: false
+CONSOLE: [spike8] aState: failed
+CONSOLE: [spike8] bState: failed
+CONSOLE: [spike8] a-transport-ice: connected
+=== RESULT ===
+{
+  "ok": true,
+  "error": null,
+  "steps": {
+    "b-certificate-fingerprints": [
+      "1E:FB:FA:4A:30:32:D6:15:2E:FC:78:0A:A9:EF:35:6F:3D:8D:C3:9D:AA:F6:5B:83:61:62:B7:1B:F8:6B:11:78"
+    ],
+    "forged-fingerprint": "1E:FB:FA:4A:30:32:D6:15:2E:FC:78:0A:A9:EF:35:6F:3D:8D:C3:9D:AA:F6:5B:83:61:62:B7:1B:F8:6B:11:87",
+    "probe-0": {
+      "aState": "new",
+      "bState": "new",
+      "rows": [
+        {
+          "id": "CF6D:2A:AB:AB:E3:A2:3E:CC:F4:2F:BF:CF:5B:F0:C4:C5:B0:9D:49:C0:B4:8B:81:D7:5B:2A:27:D9:AA:32:CB:17",
+          "timestamp": 1791854903173.685,
+          "type": "certificate",
+          "base64Certificate": "MIIBFjCBvaADAgECAgkAtmbm/wcVyZwwCgYIKoZIzj0EAwIwETEPMA0GA1UEAwwGV2ViUlRDMB4XDTI2MTAxMjAxMjgyM1oXDTI2MTExMjAxMjgyM1owETEPMA0GA1UEAwwGV2ViUlRDMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEH3gVSDfdHjLhV4TJZxCzQDpiA6TZ89OoN7JyfvGgzm7cs9/E9sYcprW3JitctLjAsnZgBwSspvEhTKAp5lV9UjAKBggqhkjOPQQDAgNIADBFAiAqjpw3ikZRxUjIleETFrB3EJT3TLQFy9CTasSmB8C9UwIhAImLYXeOQN2u4NlUM73dkQnhwONIwjzZB8p9KgN8OTI8",
+          "fingerprint": "6D:2A:AB:AB:E3:A2:3E:CC:F4:2F:BF:CF:5B:F0:C4:C5:B0:9D:49:C0:B4:8B:81:D7:5B:2A:27:D9:AA:32:CB:17",
+          "fingerprintAlgorithm": "sha-256"
+        },
+        {
+          "id": "T01",
+          "timestamp": 1791854903173.685,
+          "type": "transport",
+          "bytesReceived": 0,
+          "bytesSent": 0,
+          "dtlsRole": "server",
+          "dtlsState": "new",
+          "iceLocalUsernameFragment": "mRsq",
+          "iceRole": "controlling",
+          "iceState": "new",
+          "localCertificateId": "CF6D:2A:AB:AB:E3:A2:3E:CC:F4:2F:BF:CF:5B:F0:C4:C5:B0:9D:49:C0:B4:8B:81:D7:5B:2A:27:D9:AA:32:CB:17",
+          "packetsReceived": 0,
+          "packetsSent": 0,
+          "selectedCandidatePairChanges": 0
+        }
+      ]
+    },
+    "b-state-1791854903273": "connected",
+    "a-state-1791854903274": "connecting",
+    "a-state-1791854903275": "failed",
+    "b-state-1791854903276": "failed",
+    "probe-1": {
+      "aState": "failed",
+      "bState": "failed",
+      "rows": [
+        {
+          "id": "CF6D:2A:AB:AB:E3:A2:3E:CC:F4:2F:BF:CF:5B:F0:C4:C5:B0:9D:49:C0:B4:8B:81:D7:5B:2A:27:D9:AA:32:CB:17",
+          "timestamp": 1791854903630.361,
+          "type": "certificate",
+          "base64Certificate": "MIIBFjCBvaADAgECAgkAtmbm/wcVyZwwCgYIKoZIzj0EAwIwETEPMA0GA1UEAwwGV2ViUlRDMB4XDTI2MTAxMjAxMjgyM1oXDTI2MTExMjAxMjgyM1owETEPMA0GA1UEAwwGV2ViUlRDMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEH3gVSDfdHjLhV4TJZxCzQDpiA6TZ89OoN7JyfvGgzm7cs9/E9sYcprW3JitctLjAsnZgBwSspvEhTKAp5lV9UjAKBggqhkjOPQQDAgNIADBFAiAqjpw3ikZRxUjIleETFrB3EJT3TLQFy9CTasSmB8C9UwIhAImLYXeOQN2u4NlUM73dkQnhwONIwjzZB8p9KgN8OTI8",
+          "fingerprint": "6D:2A:AB:AB:E3:A2:3E:CC:F4:2F:BF:CF:5B:F0:C4:C5:B0:9D:49:C0:B4:8B:81:D7:5B:2A:27:D9:AA:32:CB:17",
+          "fingerprintAlgorithm": "sha-256"
+        },
+        {
+          "id": "T01",
+          "timestamp": 1791854903630.361,
+          "type": "transport",
+          "bytesReceived": 762,
+          "bytesSent": 653,
+          "dtlsRole": "server",
+          "dtlsState": "failed",
+          "iceLocalUsernameFragment": "mRsq",
+          "iceRole": "controlling",
+          "iceState": "connected",
+          "localCertificateId": "CF6D:2A:AB:AB:E3:A2:3E:CC:F4:2F:BF:CF:5B:F0:C4:C5:B0:9D:49:C0:B4:8B:81:D7:5B:2A:27:D9:AA:32:CB:17",
+          "packetsReceived": 4,
+          "packetsSent": 2,
+          "selectedCandidatePairChanges": 1,
+          "selectedCandidatePairId": "CPfrRS8CYb_VHVjkBz7"
+        }
+      ]
+    },
+    "real-b-fingerprint": "1E:FB:FA:4A:30:32:D6:15:2E:FC:78:0A:A9:EF:35:6F:3D:8D:C3:9D:AA:F6:5B:83:61:62:B7:1B:F8:6B:11:78",
+    "remoteFingerprintVisible": false,
+    "aState": "failed",
+    "bState": "failed",
+    "a-transport-ice": "connected"
+  }
+}
+Starting server 1/1: python3 -m http.server 8128 --directory /Users/rohan/eagle/project
+Waiting for server on port 8128...
+Server ready on port 8128
+
+All 1 server(s) ready
+Running: /tmp/webtest-venv/bin/python tmp/autoconnect/run-spike.py 8128 tmp/autoconnect/spike8.html  120000
+
+
+Stopping 1 server(s)...
+Server 1 stopped
+All servers stopped

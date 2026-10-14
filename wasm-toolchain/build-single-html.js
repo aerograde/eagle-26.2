@@ -338,6 +338,10 @@ const workerJs = read("worker-bootstrap.js").toString("utf8");
 // Boot-time same-network discovery module (optional at runtime: it parks
 // itself when the serving origin has no /eagler-lan/v1 discovery service).
 const discoveryJs = read("lan-discovery.js").toString("utf8");
+// Serverless automatic LAN connection (the AutoConnect plan). Optional at
+// runtime exactly like discovery: it parks itself when the engine has no
+// WebRTC, and it is started by the game layer, not by this shell.
+const autoConnectJs = read("autoconnect.js").toString("utf8");
 const wasm = read("classes.wasm");
 const meshWasm = read("mesh-worker.wasm");
 // The slim Wasm-GC client intentionally excludes IntegratedServer. A matching
@@ -391,6 +395,13 @@ html = html.replace(
 );
 if (html.indexOf("__eaglerLAN") < 0) {
   fail("lan-discovery.js did not inline; the shell script tag is missing");
+}
+html = html.replace(
+  /<script type="text\/javascript" src="autoconnect\.js(?:\?v=[^"]+)?"><\/script>/,
+  `<script type="text/javascript">\n${autoConnectJs}\n</script>`
+);
+if (html.indexOf("__eaglerAC") < 0) {
+  fail("autoconnect.js did not inline; the shell script tag is missing");
 }
 
 if (withoutMusic) {

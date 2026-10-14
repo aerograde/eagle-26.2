@@ -1,0 +1,32 @@
+URL: http://127.0.0.1:8128/tmp/autoconnect/spike8.html
+CONSOLE: [spike8] b-certificate-fingerprints: ["2E:3C:1B:56:2B:83:F1:94:50:DE:F5:31:3F:12:A9:54:35:E3:88:35:49:C9:3F:CA:3C:04:9B:10:89:96:45:15"]
+CONSOLE: [spike8] forged-fingerprint: 2E:3C:1B:56:2B:83:F1:94:50:DE:F5:31:3F:12:A9:54:35:E3:88:35:49:C9:3F:CA:3C:04:9B:10:89:96:45:EA
+=== RESULT ===
+CONSOLE: [spike8] b-state-1791854862443: connecting
+CONSOLE: [spike8] a-state-1791854862447: connecting
+{
+  "ok": false,
+  "error": "s.forEach is not a function",
+  "steps": {
+    "b-certificate-fingerprints": [
+      "2E:3C:1B:56:2B:83:F1:94:50:DE:F5:31:3F:12:A9:54:35:E3:88:35:49:C9:3F:CA:3C:04:9B:10:89:96:45:15"
+    ],
+    "forged-fingerprint": "2E:3C:1B:56:2B:83:F1:94:50:DE:F5:31:3F:12:A9:54:35:E3:88:35:49:C9:3F:CA:3C:04:9B:10:89:96:45:EA",
+    "b-state-1791854862443": "connecting",
+    "a-state-1791854862447": "connecting"
+  }
+}
+CONSOLE: [spike8] b-state-1791854862455: connected
+CONSOLE: [spike8] b-state-1791854862455: failed
+CONSOLE: [spike8] a-state-1791854862456: failed
+Starting server 1/1: python3 -m http.server 8128 --directory /Users/rohan/eagle/project
+Waiting for server on port 8128...
+Server ready on port 8128
+
+All 1 server(s) ready
+Running: /tmp/webtest-venv/bin/python tmp/autoconnect/run-spike.py 8128 tmp/autoconnect/spike8.html  120000
+
+
+Stopping 1 server(s)...
+Server 1 stopped
+All servers stopped

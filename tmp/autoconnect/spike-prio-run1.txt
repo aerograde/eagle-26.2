@@ -1,0 +1,461 @@
+[recv] [spike-prio] listener-ports: [49759,56668]
+listener ports: [49759, 56668]
+[send] [spike-prio] sender-locals: ["53214:2113929727|54690:2113937151","53562:2113929727|62541:2113937151","56183:2113937151|57369:2113929727","54831:2113929727|54217:2113937151","53708:2113929727|60016:2113937151","55995:2113929727|60929:2113937151","60522:2113937151|59656:2113929727","64478:2113929727|53528:2113937151"]
+[send] [spike-prio] fired: 8
+[send] [spike-prio] done: true
+=== SPIKE PRIO RESULT ===
+{
+  "addr": "192.168.0.100",
+  "listener": {
+    "ok": false,
+    "error": null,
+    "role": "recv",
+    "ports": [
+      49759,
+      56668
+    ],
+    "arrivals": [
+      {
+        "at": 1791942127162,
+        "reportTimestamp": 1791942127162.485,
+        "remoteId": "ItNjJfbze",
+        "sourcePort": 54690,
+        "priority": 1845501695,
+        "foundation": "1597411785",
+        "address": "",
+        "protocol": "udp",
+        "url": null,
+        "usernameFragment": "AC24aa",
+        "relatedAddress": null,
+        "relatedPort": null,
+        "localPort": 49759,
+        "pairState": "succeeded",
+        "pairPriority": 7926369428965441000,
+        "pairNominated": true,
+        "pairRequestsReceived": 0,
+        "pairResponsesSent": 0,
+        "pairTimestamp": 1791942127162.485
+      },
+      {
+        "at": 1791942127319,
+        "reportTimestamp": 1791942127319.226,
+        "remoteId": "I9s1Uz4DX",
+        "sourcePort": 62541,
+        "priority": 1845501695,
+        "foundation": "3417347913",
+        "address": "",
+        "protocol": "udp",
+        "url": null,
+        "usernameFragment": "AC24aa",
+        "relatedAddress": null,
+        "relatedPort": null,
+        "localPort": 56668,
+        "pairState": "waiting",
+        "pairPriority": 7926369428965426000,
+        "pairNominated": false,
+        "pairRequestsReceived": 1,
+        "pairResponsesSent": 1,
+        "pairTimestamp": 1791942127319.226
+      },
+      {
+        "at": 1791942127478,
+        "reportTimestamp": 1791942127477.992,
+        "remoteId": "I4JmfEpR+",
+        "sourcePort": 56183,
+        "priority": 1845501695,
+        "foundation": "4207685753",
+        "address": "",
+        "protocol": "udp",
+        "url": null,
+        "usernameFragment": "AC24aa",
+        "relatedAddress": null,
+        "relatedPort": null,
+        "localPort": 49759,
+        "pairState": "waiting",
+        "pairPriority": 7926369428965441000,
+        "pairNominated": true,
+        "pairRequestsReceived": 1,
+        "pairResponsesSent": 1,
+        "pairTimestamp": 1791942127477.992
+      },
+      {
+        "at": 1791942127641,
+        "reportTimestamp": 1791942127640.762,
+        "remoteId": "IUUeJBCmf",
+        "sourcePort": 54217,
+        "priority": 1845501695,
+        "foundation": "1949321330",
+        "address": "",
+        "protocol": "udp",
+        "url": null,
+        "usernameFragment": "AC24aa",
+        "relatedAddress": null,
+        "relatedPort": null,
+        "localPort": 56668,
+        "pairState": "waiting",
+        "pairPriority": 7926369428965426000,
+        "pairNominated": true,
+        "pairRequestsReceived": 1,
+        "pairResponsesSent": 1,
+        "pairTimestamp": 1791942127640.762
+      },
+      {
+        "at": 1791942127804,
+        "reportTimestamp": 1791942127804.272,
+        "remoteId": "IJtamksJF",
+        "sourcePort": 60016,
+        "priority": 1845501695,
+        "foundation": "1223393110",
+        "address": "",
+        "protocol": "udp",
+        "url": null,
+        "usernameFragment": "AC24aa",
+        "relatedAddress": null,
+        "relatedPort": null,
+        "localPort": 49759,
+        "pairState": "waiting",
+        "pairPriority": 7926369428965441000,
+        "pairNominated": true,
+        "pairRequestsReceived": 1,
+        "pairResponsesSent": 1,
+        "pairTimestamp": 1791942127804.272
+      },
+      {
+        "at": 1791942127963,
+        "reportTimestamp": 1791942127962.943,
+        "remoteId": "Ioq8vXkLU",
+        "sourcePort": 60929,
+        "priority": 1845501695,
+        "foundation": "3048964272",
+        "address": "",
+        "protocol": "udp",
+        "url": null,
+        "usernameFragment": "AC24aa",
+        "relatedAddress": null,
+        "relatedPort": null,
+        "localPort": 56668,
+        "pairState": "waiting",
+        "pairPriority": 7926369428965426000,
+        "pairNominated": true,
+        "pairRequestsReceived": 1,
+        "pairResponsesSent": 1,
+        "pairTimestamp": 1791942127962.943
+      },
+      {
+        "at": 1791942128071,
+        "reportTimestamp": 1791942128070.511,
+        "remoteId": "IZt2jRcNl",
+        "sourcePort": 60522,
+        "priority": 1845501695,
+        "foundation": "582545597",
+        "address": "",
+        "protocol": "udp",
+        "url": null,
+        "usernameFragment": "AC24aa",
+        "relatedAddress": null,
+        "relatedPort": null,
+        "localPort": 49759,
+        "pairState": "waiting",
+        "pairPriority": 7926369428965441000,
+        "pairNominated": true,
+        "pairRequestsReceived": 1,
+        "pairResponsesSent": 1,
+        "pairTimestamp": 1791942128070.511
+      },
+      {
+        "at": 1791942128230,
+        "reportTimestamp": 1791942128229.756,
+        "remoteId": "I8G/3aN0l",
+        "sourcePort": 53528,
+        "priority": 1845501695,
+        "foundation": "3221324495",
+        "address": "",
+        "protocol": "udp",
+        "url": null,
+        "usernameFragment": "AC24aa",
+        "relatedAddress": null,
+        "relatedPort": null,
+        "localPort": 56668,
+        "pairState": "waiting",
+        "pairPriority": 7926369428965426000,
+        "pairNominated": true,
+        "pairRequestsReceived": 1,
+        "pairResponsesSent": 1,
+        "pairTimestamp": 1791942128229.756
+      }
+    ],
+    "senders": [],
+    "fires": [],
+    "reports": 1079,
+    "own": [
+      {
+        "id": "IBqGOHhwi",
+        "port": 49759,
+        "priority": 2113937151,
+        "address": "",
+        "candidateType": "host",
+        "protocol": "udp"
+      },
+      {
+        "id": "IDBQf4qLX",
+        "port": 56668,
+        "priority": 2113929727,
+        "address": "",
+        "candidateType": "host",
+        "protocol": "udp"
+      }
+    ]
+  },
+  "sender": {
+    "ok": true,
+    "error": null,
+    "role": "send",
+    "ports": [],
+    "arrivals": [],
+    "senders": [
+      {
+        "i": 0,
+        "wanted": 1254096896,
+        "locals": [
+          {
+            "id": "ISETQ/HKo",
+            "port": 53214,
+            "priority": 2113929727,
+            "address": "",
+            "candidateType": "host",
+            "protocol": "udp"
+          },
+          {
+            "id": "IuOyPJU3Q",
+            "port": 54690,
+            "priority": 2113937151,
+            "address": "",
+            "candidateType": "host",
+            "protocol": "udp"
+          }
+        ]
+      },
+      {
+        "i": 1,
+        "wanted": 1254162433,
+        "locals": [
+          {
+            "id": "IKKoFcffm",
+            "port": 53562,
+            "priority": 2113929727,
+            "address": "",
+            "candidateType": "host",
+            "protocol": "udp"
+          },
+          {
+            "id": "IVeRwziyV",
+            "port": 62541,
+            "priority": 2113937151,
+            "address": "",
+            "candidateType": "host",
+            "protocol": "udp"
+          }
+        ]
+      },
+      {
+        "i": 2,
+        "wanted": 1254227970,
+        "locals": [
+          {
+            "id": "IHydZiC5d",
+            "port": 56183,
+            "priority": 2113937151,
+            "address": "",
+            "candidateType": "host",
+            "protocol": "udp"
+          },
+          {
+            "id": "IQwhXr+RD",
+            "port": 57369,
+            "priority": 2113929727,
+            "address": "",
+            "candidateType": "host",
+            "protocol": "udp"
+          }
+        ]
+      },
+      {
+        "i": 3,
+        "wanted": 1254293507,
+        "locals": [
+          {
+            "id": "IJtUJmwMw",
+            "port": 54831,
+            "priority": 2113929727,
+            "address": "",
+            "candidateType": "host",
+            "protocol": "udp"
+          },
+          {
+            "id": "INvuiwqRw",
+            "port": 54217,
+            "priority": 2113937151,
+            "address": "",
+            "candidateType": "host",
+            "protocol": "udp"
+          }
+        ]
+      },
+      {
+        "i": 4,
+        "wanted": 1254359044,
+        "locals": [
+          {
+            "id": "I47pbHWAg",
+            "port": 53708,
+            "priority": 2113929727,
+            "address": "",
+            "candidateType": "host",
+            "protocol": "udp"
+          },
+          {
+            "id": "I4tledlb8",
+            "port": 60016,
+            "priority": 2113937151,
+            "address": "",
+            "candidateType": "host",
+            "protocol": "udp"
+          }
+        ]
+      },
+      {
+        "i": 5,
+        "wanted": 1254424581,
+        "locals": [
+          {
+            "id": "IhgGWeVZA",
+            "port": 55995,
+            "priority": 2113929727,
+            "address": "",
+            "candidateType": "host",
+            "protocol": "udp"
+          },
+          {
+            "id": "Ij0NDfRu2",
+            "port": 60929,
+            "priority": 2113937151,
+            "address": "",
+            "candidateType": "host",
+            "protocol": "udp"
+          }
+        ]
+      },
+      {
+        "i": 6,
+        "wanted": 1254490118,
+        "locals": [
+          {
+            "id": "IiZlMN+hl",
+            "port": 60522,
+            "priority": 2113937151,
+            "address": "",
+            "candidateType": "host",
+            "protocol": "udp"
+          },
+          {
+            "id": "IvGlMetmE",
+            "port": 59656,
+            "priority": 2113929727,
+            "address": "",
+            "candidateType": "host",
+            "protocol": "udp"
+          }
+        ]
+      },
+      {
+        "i": 7,
+        "wanted": 1254555655,
+        "locals": [
+          {
+            "id": "IXYWMynrj",
+            "port": 64478,
+            "priority": 2113929727,
+            "address": "",
+            "candidateType": "host",
+            "protocol": "udp"
+          },
+          {
+            "id": "Iu1kCR3GB",
+            "port": 53528,
+            "priority": 2113937151,
+            "address": "",
+            "candidateType": "host",
+            "protocol": "udp"
+          }
+        ]
+      }
+    ],
+    "fires": [
+      {
+        "i": 0,
+        "wanted": 1254096896,
+        "target": 49759,
+        "ok": true,
+        "at": 1791942127148,
+        "err": null
+      },
+      {
+        "i": 1,
+        "wanted": 1254162433,
+        "target": 56668,
+        "ok": true,
+        "at": 1791942127301,
+        "err": null
+      },
+      {
+        "i": 2,
+        "wanted": 1254227970,
+        "target": 49759,
+        "ok": true,
+        "at": 1791942127452,
+        "err": null
+      },
+      {
+        "i": 3,
+        "wanted": 1254293507,
+        "target": 56668,
+        "ok": true,
+        "at": 1791942127603,
+        "err": null
+      },
+      {
+        "i": 4,
+        "wanted": 1254359044,
+        "target": 49759,
+        "ok": true,
+        "at": 1791942127756,
+        "err": null
+      },
+      {
+        "i": 5,
+        "wanted": 1254424581,
+        "target": 56668,
+        "ok": true,
+        "at": 1791942127912,
+        "err": null
+      },
+      {
+        "i": 6,
+        "wanted": 1254490118,
+        "target": 49759,
+        "ok": true,
+        "at": 1791942128063,
+        "err": null
+      },
+      {
+        "i": 7,
+        "wanted": 1254555655,
+        "target": 56668,
+        "ok": true,
+        "at": 1791942128214,
+        "err": null
+      }
+    ],
+    "reports": 0
+  }
+}

@@ -1,0 +1,137 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Which pool state slows getStats?</title></head>
+<body>
+<pre id="out" style="font:12px monospace;white-space:pre-wrap"></pre>
+<script>
+/*
+ * Spike 12.  Spike 11 showed a pool of 175 *idle* connections costs nothing
+ * (0-10 ms getStats).  The engine, with the same pool but after it fired at
+ * thousands of candidate addresses, saw every reader's getStats take 250-1000 ms
+ * and never recover.  This isolates the difference: connections holding checks
+ * to addresses that will never answer.
+ *
+ *   ?n=176&f=3    176 connections, 3 checks each (a probe-sized load)
+ *   ?n=24&f=85    24 connections, 85 checks each (a locate/scanner-sized load)
+ *   ?n=176&f=0    the idle baseline
+ * Every connection is the engine's shared-credential shape.  The measured
+ * connection is a separate small one that only ever received two arrivals.
+ */
+(function () {
+  "use strict";
+  var params = new URLSearchParams(location.search || "");
+  var out = document.getElementById("out");
+  var R = { ok: false, error: null, timings: [], fired: 0, pool: 0 };
+  window.__spike = R;
+  function say(k, m) {
+    var line = k + ": " + (typeof m === "string" ? m : JSON.stringify(m));
+    console.log("[spike12] " + line);
+    out.textContent += line + "\n";
+  }
+  var UFRAG = "AC24aa";
+  var PWD = "AC24shared7xpadded000000";
+  function munge(sdp) {
+    return sdp.replace(/a=ice-ufrag:[^\r\n]*/g, "a=ice-ufrag:" + UFRAG)
+      .replace(/a=ice-pwd:[^\r\n]*/g, "a=ice-pwd:" + PWD);
+  }
+  function dummy() { var p = []; for (var i = 0; i < 32; i++) p.push("AB"); return p.join(":"); }
+  function forge(localSdp) {
+    var lines = String(localSdp).split(/\r\n|\n/), kept = [];
+    for (var i = 0; i < lines.length; i++) {
+      var L = lines[i].replace(/\r$/, "");
+      if (L === "") continue;
+      if (/^a=candidate:/.test(L)) continue;
+      if (/^a=ice-ufrag:/.test(L)) { kept.push("a=ice-ufrag:" + UFRAG); continue; }
+      if (/^a=ice-pwd:/.test(L)) { kept.push("a=ice-pwd:" + PWD); continue; }
+      if (/^a=fingerprint:/.test(L)) { kept.push("a=fingerprint:sha-256 " + dummy()); continue; }
+      if (/^a=setup:/.test(L)) { kept.push("a=setup:passive"); continue; }
+      kept.push(L);
+    }
+    return kept.join("\r\n") + "\r\n";
+  }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function makePc() {
+    var pc = new RTCPeerConnection({});
+    pc.createDataChannel("probe", { ordered: true });
+    return pc.createOffer().then(function (o) {
+      return pc.setLocalDescription({ type: "offer", sdp: munge(o.sdp) });
+    }).then(function () {
+      return pc.setRemoteDescription({ type: "answer", sdp: forge(pc.localDescription.sdp) });
+    }).then(function () { return pc; });
+  }
+  function fire(pc, address, port) {
+    try {
+      return pc.addIceCandidate({
+        candidate: "candidate:1 1 udp 2130706431 " + address + " " + port + " typ host",
+        sdpMid: "0", sdpMLineIndex: 0
+      }).then(function () { return true; }, function () { return false; });
+    } catch (e) { return Promise.resolve(false); }
+  }
+  function timeIt(pc) {
+    var t0 = performance.now();
+    return pc.getStats().then(function (stats) {
+      var rows = 0;
+      stats.forEach(function () { rows++; });
+      R.timings.push({ ms: Math.round(performance.now() - t0), rows: rows });
+    }, function () { R.timings.push({ ms: -1, rows: -1 }); });
+  }
+
+  var n = parseInt(params.get("n") || "176", 10);
+  var f = parseInt(params.get("f") || "3", 10);
+  var pool = [];
+  function build() {
+    if (pool.length >= n) return Promise.resolve();
+    var want = Math.min(24, n - pool.length);
+    var jobs = [];
+    for (var i = 0; i < want; i++) jobs.push(makePc());
+    return Promise.all(jobs).then(function (pcs) {
+      for (var k = 0; k < pcs.length; k++) pool.push(pcs[k]);
+      console.log("[spike12] built " + pool.length + "/" + n);
+      return build();
+    });
+  }
+
+  var t0 = performance.now();
+  build().then(function () {
+    R.pool = pool.length;
+    say("pool-built", pool.length + " connections in " + Math.round(performance.now() - t0) + " ms");
+    if (!f) return null;
+    // Fired in ticks of 40, the way the engine fires: each check aims at a
+    // closed port on an address that does not answer.
+    var i = 0, done = 0;
+    function tick() {
+      var jobs = [];
+      var k = 0;
+      while (i < pool.length && k < 40) {
+        var pc = pool[i % pool.length];
+        for (var j = 0; j < f; j++) jobs.push(fire(pc, "192.168.77.1", 40000 + (done % 2000)));
+        i++; k++;
+      }
+      done += jobs.length;
+      R.fired = done;
+      if (i >= pool.length) return Promise.all(jobs);
+      return Promise.all(jobs).then(function () { return sleep(5); }).then(tick);
+    }
+    return tick().then(function () {
+      say("fired", done + " checks (f per connection: " + f + ")");
+    });
+  }).then(function () {
+    // 24 polls at ~150 ms spacing: the engine needs this loop to stay near 50 ms.
+    var chain = Promise.resolve();
+    for (var j = 0; j < 24; j++) {
+      chain = chain.then(function () { return timeIt(pool[0]); }).then(function () { return sleep(150); });
+    }
+    return chain;
+  }).then(function () {
+    R.ok = true;
+    say("getStats ms over ~4 s", R.timings.map(function (x) { return x.ms; }));
+    var rows = R.timings.map(function (x) { return x.rows; });
+    say("report rows", rows[0] + ".." + rows[rows.length - 1]);
+  }).catch(function (err) {
+    R.error = String(err && err.message ? err.message : err);
+    say("error", R.error);
+  });
+})();
+</script>
+</body>
+</html>

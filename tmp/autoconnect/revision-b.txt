@@ -1,0 +1,1 @@
+6e3f2bf6529617840687d77445ae0bbbf41d2b0d7e99ee7ba31cdd005787c093  target_teavm_wasm_gc/src/web/autoconnect.js

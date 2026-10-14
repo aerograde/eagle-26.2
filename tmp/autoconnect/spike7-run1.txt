@@ -1,0 +1,142 @@
+[recv] [spike7] listener-ports: [50053,52245]
+listener port: 50053 addr: 192.168.0.100
+[send] [spike7] own-ports: [55879,64175,50104,57053,57731,60122]
+[send] [spike7] pulse-0: sent from port 55879
+[send] [spike7] pulse-1: sent from port 64175
+[send] [spike7] pulse-2: sent from port 50104
+[send] [spike7] pulse-3: sent from port 57053
+[send] [spike7] pulse-4: sent from port 57731
+[send] [spike7] pulse-5: sent from port 60122
+[send] [spike7] sent: 6
+[send] [spike7] our-observed-remote-candidates: 6
+[recv] [spike7] arrivals: 6
+=== SENDER ===
+{
+  "own_ports": [
+    55879,
+    64175,
+    50104,
+    57053,
+    57731,
+    60122
+  ],
+  "sent": [
+    {
+      "i": 0,
+      "port": 55879,
+      "ok": true,
+      "at": 1791854607784
+    },
+    {
+      "i": 1,
+      "port": 64175,
+      "ok": true,
+      "at": 1791854608290
+    },
+    {
+      "i": 2,
+      "port": 50104,
+      "ok": true,
+      "at": 1791854608790
+    },
+    {
+      "i": 3,
+      "port": 57053,
+      "ok": true,
+      "at": 1791854609292
+    },
+    {
+      "i": 4,
+      "port": 57731,
+      "ok": true,
+      "at": 1791854609793
+    },
+    {
+      "i": 5,
+      "port": 60122,
+      "ok": true,
+      "at": 1791854610295
+    }
+  ]
+}
+=== RECEIVER ===
+{
+  "listener_port": 50053,
+  "arrivals": [
+    {
+      "port": 55879,
+      "type": "prflx",
+      "at": 1791854607818,
+      "address": ""
+    },
+    {
+      "port": 64175,
+      "type": "prflx",
+      "at": 1791854608316,
+      "address": ""
+    },
+    {
+      "port": 49834,
+      "type": "prflx",
+      "at": 1791854608806,
+      "address": ""
+    },
+    {
+      "port": 57053,
+      "type": "prflx",
+      "at": 1791854609297,
+      "address": ""
+    },
+    {
+      "port": 57731,
+      "type": "prflx",
+      "at": 1791854609845,
+      "address": ""
+    },
+    {
+      "port": 50425,
+      "type": "prflx",
+      "at": 1791854610330,
+      "address": ""
+    }
+  ]
+}
+=== VERDICT ===
+arrivals: 6, arrivals whose port is one of the sender's own ports: 4
+[
+  {
+    "port": 55879,
+    "type": "prflx",
+    "at": 1791854607818,
+    "address": ""
+  },
+  {
+    "port": 64175,
+    "type": "prflx",
+    "at": 1791854608316,
+    "address": ""
+  },
+  {
+    "port": 57053,
+    "type": "prflx",
+    "at": 1791854609297,
+    "address": ""
+  },
+  {
+    "port": 57731,
+    "type": "prflx",
+    "at": 1791854609845,
+    "address": ""
+  }
+]
+Starting server 1/1: python3 -m http.server 8126 --directory /Users/rohan/eagle/project
+Waiting for server on port 8126...
+Server ready on port 8126
+
+All 1 server(s) ready
+Running: /tmp/webtest-venv/bin/python tmp/autoconnect/run-spike7.py 8126
+
+
+Stopping 1 server(s)...
+Server 1 stopped
+All servers stopped

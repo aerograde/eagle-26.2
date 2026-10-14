@@ -1,0 +1,112 @@
+URL: http://127.0.0.1:8123/spike3.html
+CONSOLE: [spike] BEGIN: A
+CONSOLE: [spike] A:sdp-candidate-lines: ["a=candidate:1386246195 1 udp 2113937151 f95c3813-56db-4f6b-a6c4-e94edd1eb4f4.local 58528 typ host generation 0 network-cost 999"]
+CONSOLE: [spike] A:icecandidate-strings: ["candidate:1386246195 1 udp 2113937151 f95c3813-56db-4f6b-a6c4-e94edd1eb4f4.local 58528 typ host generation 0 ufrag AC24aa network-cost 999"]
+CONSOLE: [spike] A:stats-local: [{"type":"host","proto":"udp","address":"","ip":"","port":54210},{"type":"host","proto":"udp","address":"","ip":"","port":58528},{"type":"host","proto":"tcp","address":"","ip":"","port":9},{"type":"host","proto":"tcp","address":"","ip":"","port":9}]
+CONSOLE: [spike] BEGIN: B8
+CONSOLE: [spike] B8: {"parallel":8,"buildMs":37,"addMs":1341,"cumulativeChecksAfterEachSecond":[136,267,400,533]}
+CONSOLE: [spike] BEGIN: B32
+CONSOLE: [spike] B32: {"parallel":32,"buildMs":116,"addMs":10583,"cumulativeChecksAfterEachSecond":[590,1175,1783,2364]}
+CONSOLE: [spike] BEGIN: B96
+CONSOLE: [spike] B96: {"parallel":96,"buildMs":333,"addMs":9784,"cumulativeChecksAfterEachSecond":[2606,4583,6858,9199]}
+=== RESULT ===
+{
+  "ok": true,
+  "error": null,
+  "steps": {
+    "sdp": "v=0\r\no=- 961867572887829443 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\na=extmap-allow-mixed\r\na=msid-semantic: WMS\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=candidate:1386246195 1 udp 2113937151 f95c3813-56db-4f6b-a6c4-e94edd1eb4f4.local 58528 typ host generation 0 network-cost 999\r\na=ice-ufrag:AC24aa\r\na=ice-pwd:AC24shared7xpadded000000\r\na=ice-options:trickle\r\na=fingerprint:sha-256 0D:BC:15:50:FA:F1:5F:D7:DC:87:47:77:0B:B0:24:9E:E4:87:89:FA:73:3C:78:A4:7E:4D:BB:0A:37:16:C5:01\r\na=setup:actpass\r\na=mid:0\r\na=sctp-port:5000\r\na=max-message-size:262144\r\n",
+    "onicecandidate": [
+      "candidate:1386246195 1 udp 2113937151 f95c3813-56db-4f6b-a6c4-e94edd1eb4f4.local 58528 typ host generation 0 ufrag AC24aa network-cost 999"
+    ],
+    "localCandidates": [
+      {
+        "type": "host",
+        "proto": "udp",
+        "address": "",
+        "ip": "",
+        "port": 54210,
+        "relatedAddress": null
+      },
+      {
+        "type": "host",
+        "proto": "udp",
+        "address": "",
+        "ip": "",
+        "port": 58528,
+        "relatedAddress": null
+      },
+      {
+        "type": "host",
+        "proto": "tcp",
+        "address": "",
+        "ip": "",
+        "port": 9,
+        "relatedAddress": null
+      },
+      {
+        "type": "host",
+        "proto": "tcp",
+        "address": "",
+        "ip": "",
+        "port": 9,
+        "relatedAddress": null
+      }
+    ],
+    "throughput8": {
+      "parallel": 8,
+      "buildMs": 37,
+      "addMs": 1341,
+      "cumulativeChecksAfterEachSecond": [
+        136,
+        267,
+        400,
+        533
+      ]
+    },
+    "throughput32": {
+      "parallel": 32,
+      "buildMs": 116,
+      "addMs": 10583,
+      "cumulativeChecksAfterEachSecond": [
+        590,
+        1175,
+        1783,
+        2364
+      ]
+    },
+    "throughput96": {
+      "parallel": 96,
+      "buildMs": 333,
+      "addMs": 9784,
+      "cumulativeChecksAfterEachSecond": [
+        2606,
+        4583,
+        6858,
+        9199
+      ]
+    }
+  },
+  "logs": [
+    "BEGIN: A",
+    "A:sdp-candidate-lines: [\"a=candidate:1386246195 1 udp 2113937151 f95c3813-56db-4f6b-a6c4-e94edd1eb4f4.local 58528 typ host generation 0 network-cost 999\"]",
+    "A:icecandidate-strings: [\"candidate:1386246195 1 udp 2113937151 f95c3813-56db-4f6b-a6c4-e94edd1eb4f4.local 58528 typ host generation 0 ufrag AC24aa network-cost 999\"]",
+    "A:stats-local: [{\"type\":\"host\",\"proto\":\"udp\",\"address\":\"\",\"ip\":\"\",\"port\":54210},{\"type\":\"host\",\"proto\":\"udp\",\"address\":\"\",\"ip\":\"\",\"port\":58528},{\"type\":\"host\",\"proto\":\"tcp\",\"address\":\"\",\"ip\":\"\",\"port\":9},{\"type\":\"host\",\"proto\":\"tcp\",\"address\":\"\",\"ip\":\"\",\"port\":9}]",
+    "BEGIN: B8",
+    "B8: {\"parallel\":8,\"buildMs\":37,\"addMs\":1341,\"cumulativeChecksAfterEachSecond\":[136,267,400,533]}",
+    "BEGIN: B32",
+    "B32: {\"parallel\":32,\"buildMs\":116,\"addMs\":10583,\"cumulativeChecksAfterEachSecond\":[590,1175,1783,2364]}",
+    "BEGIN: B96",
+    "B96: {\"parallel\":96,\"buildMs\":333,\"addMs\":9784,\"cumulativeChecksAfterEachSecond\":[2606,4583,6858,9199]}"
+  ]
+}
+Starting server 1/1: python3 -m http.server 8123 --directory /Users/rohan/eagle/project/tmp/autoconnect
+Waiting for server on port 8123...
+Server ready on port 8123
+
+All 1 server(s) ready
+Running: /tmp/webtest-venv/bin/python tmp/autoconnect/run-spike.py 8123 spike3.html  400000
+
+
+Stopping 1 server(s)...
+Server 1 stopped
+All servers stopped

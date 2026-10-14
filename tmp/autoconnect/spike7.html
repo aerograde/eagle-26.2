@@ -1,0 +1,176 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Does a pulse carry the sender's port?</title></head>
+<body>
+<pre id="out" style="font:12px monospace;white-space:pre-wrap"></pre>
+<script>
+/*
+ * Spike 7.  The pulse channel is the only way anything can be said to a peer
+ * that was found, and today it costs one fresh RTCPeerConnection per bit.  This
+ * measures whether the receiver can also read the *port* the check came from -
+ * if it can, one pulse carries several bits instead of one.
+ *
+ * mode=recv          a shared-credential listener, records every new
+ *                    peer-reflexive candidate with its port and arrival time
+ * mode=send&addr=..  six connections, one pulse each, 500 ms apart, then reports
+ *                    the port each one owns
+ */
+(function () {
+  "use strict";
+  var out = document.getElementById("out");
+  var R = { ok: false, error: null, role: null, ports: [], arrivals: [], sent: [], steps: {} };
+  window.__spike = R;
+  function say(k, m) {
+    R.steps[k] = m;
+    var line = k + ": " + (typeof m === "string" ? m : JSON.stringify(m));
+    console.log("[spike7] " + line);
+    out.textContent += line + "\n";
+  }
+  var sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+  var UFRAG = "AC24aa";
+  var PWD = "AC24shared7xpadded000000";
+  function munge(sdp) {
+    return sdp.replace(/a=ice-ufrag:[^\r\n]*/g, "a=ice-ufrag:" + UFRAG)
+      .replace(/a=ice-pwd:[^\r\n]*/g, "a=ice-pwd:" + PWD);
+  }
+  function forge(localSdp) {
+    var lines = String(localSdp).split(/\r\n|\n/), kept = [];
+    for (var i = 0; i < lines.length; i++) {
+      var L = lines[i].replace(/\r$/, "");
+      if (L === "" || /^a=candidate:/.test(L)) continue;
+      if (/^a=ice-ufrag:/.test(L)) { kept.push("a=ice-ufrag:" + UFRAG); continue; }
+      if (/^a=ice-pwd:/.test(L)) { kept.push("a=ice-pwd:" + PWD); continue; }
+      if (/^a=fingerprint:/.test(L)) {
+        var fp = []; for (var j = 0; j < 32; j++) fp.push("AB");
+        kept.push("a=fingerprint:sha-256 " + fp.join(":")); continue;
+      }
+      if (/^a=setup:/.test(L)) { kept.push("a=setup:passive"); continue; }
+      kept.push(L);
+    }
+    return kept.join("\r\n") + "\r\n";
+  }
+  function shared() {
+    var pc = new RTCPeerConnection({ iceServers: [] });
+    pc.createDataChannel("probe", { ordered: true });
+    return pc.createOffer().then(function (o) {
+      return pc.setLocalDescription({ type: "offer", sdp: munge(o.sdp) });
+    }).then(function () {
+      return pc.setRemoteDescription({ type: "answer", sdp: forge(pc.localDescription.sdp) });
+    }).then(function () { return pc; });
+  }
+  function udpPorts(pc) {
+    return pc.getStats().then(function (stats) {
+      var ports = [];
+      stats.forEach(function (s) {
+        if (s.type === "local-candidate" && s.protocol === "udp") ports.push(s.port);
+      });
+      return ports;
+    });
+  }
+  function waitPorts(pc) {
+    // Host candidates appear a moment after the description is applied.
+    var until = Date.now() + 4000;
+    return (function attempt() {
+      return udpPorts(pc).then(function (ports) {
+        if (ports.length || Date.now() > until) return ports;
+        return sleep(100).then(attempt);
+      });
+    })();
+  }
+
+  function addCandidate(pc, address, port) {
+    try {
+      return pc.addIceCandidate({
+        candidate: "candidate:1 1 udp 2130706431 " + address + " " + port + " typ host",
+        sdpMid: "0", sdpMLineIndex: 0
+      }).then(function () { return true; }, function () { return false; });
+    } catch (e) { return Promise.resolve(false); }
+  }
+  function remoteCandidates(pc) {
+    return pc.getStats().then(function (stats) {
+      var rows = [];
+      stats.forEach(function (s) {
+        if (s.type === "remote-candidate") {
+          rows.push({ id: s.id, port: s.port, candidateType: s.candidateType, address: s.address || "" });
+        }
+      });
+      return rows;
+    });
+  }
+
+  function receive() {
+    return shared().then(function (pc) {
+      R.pc = pc;
+      return waitPorts(pc).then(function (ports) {
+        R.ports = ports;
+        say("listener-ports", ports);
+        if (!ports.length) { R.error = "no udp port"; return null; }
+        var seen = Object.create(null), baseline = true;
+        var until = Date.now() + 14000;
+        return (function poll() {
+          if (Date.now() > until) return Promise.resolve();
+          return remoteCandidates(pc).then(function (rows) {
+            for (var i = 0; i < rows.length; i++) {
+              if (seen[rows[i].id]) continue;
+              seen[rows[i].id] = true;
+              if (baseline) continue;
+              R.arrivals.push({ port: rows[i].port, type: rows[i].candidateType, at: Date.now(), address: rows[i].address });
+            }
+            baseline = false;
+            return sleep(8).then(poll);
+          });
+        })();
+      });
+    }).then(function () { say("arrivals", R.arrivals.length); });
+  }
+
+  function send(address) {
+    var targetPorts = (R.steps.targetPorts || []);
+    var pcs = [];
+    var chain = Promise.resolve();
+    for (var i = 0; i < 6; i++) chain = chain.then(function () { return shared().then(function (pc) { pcs.push(pc); }); });
+    return chain.then(function () {
+      return Promise.all(pcs.map(waitPorts)).then(function (lists) {
+        R.ports = lists.map(function (l) { return l[0]; });
+        say("own-ports", R.ports);
+        return R.ports;
+      });
+    }).then(function () {
+      var port = Number(new URLSearchParams(location.search).get("targetPort"));
+      var chain2 = Promise.resolve();
+      for (var i = 0; i < 6; i++) {
+        (function (i) {
+          chain2 = chain2.then(function () {
+            var t = Date.now();
+            return addCandidate(pcs[i], address, port).then(function (ok) {
+              R.sent.push({ i: i, port: R.ports[i], ok: ok, at: t });
+              say("pulse-" + i, (ok ? "sent" : "rejected") + " from port " + R.ports[i]);
+              return sleep(500);
+            });
+          });
+        })(i);
+      }
+      return chain2;
+    }).then(function () {
+      return sleep(2000);
+    }).then(function () {
+      say("sent", R.sent.length);
+      return Promise.all(pcs.map(function (pc) { return remoteCandidates(pc); })).then(function (rows) {
+        var observed = [];
+        rows.forEach(function (r) { r.forEach(function (c) { observed.push({ port: c.port, type: c.candidateType }); }); });
+        R.observed = observed;
+        say("our-observed-remote-candidates", observed.length);
+      });
+    });
+  }
+
+  var params = new URLSearchParams(location.search || "");
+  var mode = params.get("mode") || "recv";
+  R.role = mode;
+  var addr = params.get("addr") || "192.168.0.100";
+  var job = mode === "send" ? send(addr) : receive();
+  job.then(function () { R.ok = true; }, function (e) { R.error = String(e && e.message ? e.message : e); });
+})();
+</script>
+</body>
+</html>

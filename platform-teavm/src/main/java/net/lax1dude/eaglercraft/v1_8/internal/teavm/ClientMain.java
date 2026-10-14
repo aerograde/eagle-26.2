@@ -130,6 +130,12 @@ public class ClientMain {
 			// where discovery stands; it never blocks boot and is a no-op when the
 			// page has no discovery service (the manual join-code flow is unchanged).
 			net.lax1dude.eaglercraft.v1_8.lan.LANDiscovery.announceAtBoot();
+			// ==== serverless automatic LAN connection (the AutoConnect plan) ====
+			// autoconnect.js is loaded by the same shell. It is not started here:
+			// the plan's pool spends most of the page's lifetime WebRTC connection
+			// budget, so it starts when the player opens a LAN screen. This only
+			// reports whether the module is present.
+			net.lax1dude.eaglercraft.v1_8.lan.AutoConnect.announceAtBoot();
 
 			JSObject opts = getEaglerXOpts();
 

@@ -1,0 +1,841 @@
+URL: http://127.0.0.1:8123/spike.html?ip=192.168.0.100
+CONSOLE: [spike] start: target ip 192.168.0.100
+CONSOLE: [spike] E1/E2: munged local creds kept=true, forged answer accepted=true
+CONSOLE: [spike] E3: listener udp port 50469
+CONSOLE: [spike] E4: scanner connected=true in 106ms
+CONSOLE: [spike] E4-listener-raw: [{"id":"CPOf00LYwZ_oxrMr733","timestamp":1791851208065.523,"type":"candidate-pair","bytesDiscardedOnSend":0,"bytesReceived":216,"bytesSent":231,"consentRequestsSent":2,"currentRoundTripTime":0.001,"lastPacketReceivedTimestamp":1791851207410,"lastPacketSentTimestamp":1791851207410,"localCandidateId":"IOf00LYwZ","nominated":true,"packetsDiscardedOnSend":0,"packetsReceived":1,"packetsSent":2,"priority":7926337542591364000,"remoteCandidateId":"IoxrMr733","requestsReceived":2,"requestsSent":3,"responsesReceived":3,"responsesSent":2,"state":"succeeded","totalRoundTripTime":0.003,"transportId":"T01","writable":true},{"id":"IoxrMr733","timestamp":1791851208065.523,"type":"remote-candidate","address":"","candidateType":"prflx","foundation":"4266548260","ip":"","isRemote":true,"port":61363,"priority":1845501695,"protocol":"udp","transportId":"T01","usernameFragment":"AC24aa"}]
+CONSOLE: [spike] E5: building 10 pulse connections (each with a data channel m-line)
+CONSOLE: [spike] E5: pool ready (10)
+CONSOLE: [spike] E5: baseline remote candidates=1
+CONSOLE: [spike] E5-result: sent=10110011 decoded=01011001 sends=[{"bit":0,"result":"added"},{"bit":2,"result":"added"},{"bit":3,"result":"added"},{"bit":6,"result":"added"},{"bit":7,"result":"added"}]
+CONSOLE: [spike] E5-remote-events: [{"at":203,"what":"new-remote","candType":"prflx","port":62506,"address":""},{"at":504,"what":"new-remote","candType":"prflx","port":55812,"address":""},{"at":626,"what":"new-remote","candType":"prflx","port":56724,"address":""},{"at":1104,"what":"new-remote","candType":"prflx","port":51868,"address":""},{"at":1225,"what":"new-remote","candType":"prflx","port":59125,"address":""}]
+CONSOLE: [spike] E5-senders: [{"state":"new","locals":[55963,58359],"pairs":[]},{"state":"new","locals":[57188,58305],"pairs":[]},{"state":"new","locals":[53530,60258],"pairs":[]},{"state":"new","locals":[58826,57652],"pairs":[]},{"state":"new","locals":[65507,50076],"pairs":[]},{"state":"connected","locals":[60898,61363,61363],"pairs":[{"state":"succeeded","sent":5,"respRecv":4}]}]
+=== RESULT ===
+{
+  "ok": true,
+  "error": null,
+  "steps": {
+    "mungedLocalDescription": true,
+    "forgedRemoteAnswerAccepted": true,
+    "listenerLocalCandidates": [
+      {
+        "type": "host",
+        "protocol": "tcp",
+        "address": "",
+        "port": 9,
+        "relayProtocol": null
+      },
+      {
+        "type": "host",
+        "protocol": "udp",
+        "address": "",
+        "port": 50469,
+        "relayProtocol": null
+      },
+      {
+        "type": "host",
+        "protocol": "udp",
+        "address": "",
+        "port": 64812,
+        "relayProtocol": null
+      },
+      {
+        "type": "host",
+        "protocol": "tcp",
+        "address": "",
+        "port": 9,
+        "relayProtocol": null
+      }
+    ],
+    "scannerConnectMs": 106,
+    "probeConnected": true,
+    "listenerStatsRaw": [
+      {
+        "id": "CPOf00LYwZ_oxrMr733",
+        "timestamp": 1791851208065.523,
+        "type": "candidate-pair",
+        "bytesDiscardedOnSend": 0,
+        "bytesReceived": 216,
+        "bytesSent": 231,
+        "consentRequestsSent": 2,
+        "currentRoundTripTime": 0.001,
+        "lastPacketReceivedTimestamp": 1791851207410,
+        "lastPacketSentTimestamp": 1791851207410,
+        "localCandidateId": "IOf00LYwZ",
+        "nominated": true,
+        "packetsDiscardedOnSend": 0,
+        "packetsReceived": 1,
+        "packetsSent": 2,
+        "priority": 7926337542591364000,
+        "remoteCandidateId": "IoxrMr733",
+        "requestsReceived": 2,
+        "requestsSent": 3,
+        "responsesReceived": 3,
+        "responsesSent": 2,
+        "state": "succeeded",
+        "totalRoundTripTime": 0.003,
+        "transportId": "T01",
+        "writable": true
+      },
+      {
+        "id": "IoxrMr733",
+        "timestamp": 1791851208065.523,
+        "type": "remote-candidate",
+        "address": "",
+        "candidateType": "prflx",
+        "foundation": "4266548260",
+        "ip": "",
+        "isRemote": true,
+        "port": 61363,
+        "priority": 1845501695,
+        "protocol": "udp",
+        "transportId": "T01",
+        "usernameFragment": "AC24aa"
+      }
+    ],
+    "pulsesSent": "10110011",
+    "pulseSends": [
+      {
+        "bit": 0,
+        "result": "added"
+      },
+      {
+        "bit": 2,
+        "result": "added"
+      },
+      {
+        "bit": 3,
+        "result": "added"
+      },
+      {
+        "bit": 6,
+        "result": "added"
+      },
+      {
+        "bit": 7,
+        "result": "added"
+      }
+    ],
+    "pulseTimeline": [
+      {
+        "at": 24,
+        "what": "tick",
+        "totalRequests": 2
+      },
+      {
+        "at": 44,
+        "what": "tick",
+        "totalRequests": 2
+      },
+      {
+        "at": 60,
+        "what": "tick",
+        "totalRequests": 2
+      },
+      {
+        "at": 80,
+        "what": "tick",
+        "totalRequests": 2
+      },
+      {
+        "at": 103,
+        "what": "tick",
+        "totalRequests": 2
+      },
+      {
+        "at": 121,
+        "what": "tick",
+        "totalRequests": 2
+      },
+      {
+        "at": 141,
+        "what": "tick",
+        "totalRequests": 2
+      },
+      {
+        "at": 161,
+        "what": "tick",
+        "totalRequests": 2
+      },
+      {
+        "at": 181,
+        "what": "tick",
+        "totalRequests": 2
+      },
+      {
+        "at": 203,
+        "what": "tick",
+        "totalRequests": 2
+      },
+      {
+        "at": 225,
+        "what": "tick",
+        "totalRequests": 2
+      },
+      {
+        "at": 244,
+        "what": "tick",
+        "totalRequests": 2
+      },
+      {
+        "at": 261,
+        "what": "tick",
+        "totalRequests": 2
+      },
+      {
+        "at": 280,
+        "what": "tick",
+        "totalRequests": 2
+      },
+      {
+        "at": 302,
+        "what": "tick",
+        "totalRequests": 2
+      },
+      {
+        "at": 321,
+        "what": "tick",
+        "totalRequests": 3
+      },
+      {
+        "at": 345,
+        "what": "tick",
+        "totalRequests": 3
+      },
+      {
+        "at": 361,
+        "what": "tick",
+        "totalRequests": 3
+      },
+      {
+        "at": 381,
+        "what": "tick",
+        "totalRequests": 3
+      },
+      {
+        "at": 403,
+        "what": "tick",
+        "totalRequests": 3
+      },
+      {
+        "at": 421,
+        "what": "tick",
+        "totalRequests": 3
+      },
+      {
+        "at": 444,
+        "what": "tick",
+        "totalRequests": 3
+      },
+      {
+        "at": 462,
+        "what": "tick",
+        "totalRequests": 3
+      },
+      {
+        "at": 480,
+        "what": "tick",
+        "totalRequests": 3
+      },
+      {
+        "at": 504,
+        "what": "tick",
+        "totalRequests": 4
+      },
+      {
+        "at": 525,
+        "what": "tick",
+        "totalRequests": 4
+      },
+      {
+        "at": 545,
+        "what": "tick",
+        "totalRequests": 4
+      },
+      {
+        "at": 562,
+        "what": "tick",
+        "totalRequests": 4
+      },
+      {
+        "at": 580,
+        "what": "tick",
+        "totalRequests": 4
+      },
+      {
+        "at": 604,
+        "what": "tick",
+        "totalRequests": 4
+      },
+      {
+        "at": 626,
+        "what": "tick",
+        "totalRequests": 5
+      },
+      {
+        "at": 644,
+        "what": "tick",
+        "totalRequests": 5
+      },
+      {
+        "at": 661,
+        "what": "tick",
+        "totalRequests": 5
+      },
+      {
+        "at": 681,
+        "what": "tick",
+        "totalRequests": 5
+      },
+      {
+        "at": 702,
+        "what": "tick",
+        "totalRequests": 5
+      },
+      {
+        "at": 725,
+        "what": "tick",
+        "totalRequests": 5
+      },
+      {
+        "at": 744,
+        "what": "tick",
+        "totalRequests": 6
+      },
+      {
+        "at": 760,
+        "what": "tick",
+        "totalRequests": 6
+      },
+      {
+        "at": 781,
+        "what": "tick",
+        "totalRequests": 6
+      },
+      {
+        "at": 800,
+        "what": "tick",
+        "totalRequests": 6
+      },
+      {
+        "at": 825,
+        "what": "tick",
+        "totalRequests": 6
+      },
+      {
+        "at": 840,
+        "what": "tick",
+        "totalRequests": 6
+      },
+      {
+        "at": 861,
+        "what": "tick",
+        "totalRequests": 6
+      },
+      {
+        "at": 881,
+        "what": "tick",
+        "totalRequests": 6
+      },
+      {
+        "at": 903,
+        "what": "tick",
+        "totalRequests": 6
+      },
+      {
+        "at": 925,
+        "what": "tick",
+        "totalRequests": 6
+      },
+      {
+        "at": 940,
+        "what": "tick",
+        "totalRequests": 6
+      },
+      {
+        "at": 961,
+        "what": "tick",
+        "totalRequests": 6
+      },
+      {
+        "at": 982,
+        "what": "tick",
+        "totalRequests": 6
+      },
+      {
+        "at": 1001,
+        "what": "tick",
+        "totalRequests": 6
+      },
+      {
+        "at": 1025,
+        "what": "tick",
+        "totalRequests": 6
+      },
+      {
+        "at": 1041,
+        "what": "tick",
+        "totalRequests": 6
+      },
+      {
+        "at": 1062,
+        "what": "tick",
+        "totalRequests": 6
+      },
+      {
+        "at": 1082,
+        "what": "tick",
+        "totalRequests": 6
+      },
+      {
+        "at": 1104,
+        "what": "tick",
+        "totalRequests": 6
+      },
+      {
+        "at": 1121,
+        "what": "tick",
+        "totalRequests": 6
+      },
+      {
+        "at": 1144,
+        "what": "tick",
+        "totalRequests": 6
+      },
+      {
+        "at": 1161,
+        "what": "tick",
+        "totalRequests": 6
+      },
+      {
+        "at": 1181,
+        "what": "tick",
+        "totalRequests": 6
+      },
+      {
+        "at": 1201,
+        "what": "tick",
+        "totalRequests": 6
+      },
+      {
+        "at": 1225,
+        "what": "tick",
+        "totalRequests": 7
+      },
+      {
+        "at": 1244,
+        "what": "tick",
+        "totalRequests": 7
+      },
+      {
+        "at": 1262,
+        "what": "tick",
+        "totalRequests": 7
+      },
+      {
+        "at": 1281,
+        "what": "tick",
+        "totalRequests": 7
+      },
+      {
+        "at": 1301,
+        "what": "tick",
+        "totalRequests": 7
+      },
+      {
+        "at": 1321,
+        "what": "tick",
+        "totalRequests": 7
+      },
+      {
+        "at": 1344,
+        "what": "tick",
+        "totalRequests": 8
+      },
+      {
+        "at": 1361,
+        "what": "tick",
+        "totalRequests": 8
+      },
+      {
+        "at": 1381,
+        "what": "tick",
+        "totalRequests": 8
+      },
+      {
+        "at": 1403,
+        "what": "tick",
+        "totalRequests": 9
+      },
+      {
+        "at": 1425,
+        "what": "tick",
+        "totalRequests": 9
+      },
+      {
+        "at": 1445,
+        "what": "tick",
+        "totalRequests": 9
+      },
+      {
+        "at": 1461,
+        "what": "tick",
+        "totalRequests": 9
+      },
+      {
+        "at": 1481,
+        "what": "tick",
+        "totalRequests": 9
+      },
+      {
+        "at": 1501,
+        "what": "tick",
+        "totalRequests": 9
+      },
+      {
+        "at": 1521,
+        "what": "tick",
+        "totalRequests": 9
+      },
+      {
+        "at": 1544,
+        "what": "tick",
+        "totalRequests": 9
+      },
+      {
+        "at": 1561,
+        "what": "tick",
+        "totalRequests": 9
+      },
+      {
+        "at": 1582,
+        "what": "tick",
+        "totalRequests": 10
+      },
+      {
+        "at": 1601,
+        "what": "tick",
+        "totalRequests": 10
+      },
+      {
+        "at": 1621,
+        "what": "tick",
+        "totalRequests": 10
+      },
+      {
+        "at": 1641,
+        "what": "tick",
+        "totalRequests": 10
+      },
+      {
+        "at": 1660,
+        "what": "tick",
+        "totalRequests": 10
+      },
+      {
+        "at": 1680,
+        "what": "tick",
+        "totalRequests": 10
+      },
+      {
+        "at": 1704,
+        "what": "tick",
+        "totalRequests": 11
+      },
+      {
+        "at": 1721,
+        "what": "tick",
+        "totalRequests": 11
+      },
+      {
+        "at": 1745,
+        "what": "tick",
+        "totalRequests": 11
+      },
+      {
+        "at": 1761,
+        "what": "tick",
+        "totalRequests": 11
+      },
+      {
+        "at": 1781,
+        "what": "tick",
+        "totalRequests": 11
+      },
+      {
+        "at": 1801,
+        "what": "tick",
+        "totalRequests": 11
+      },
+      {
+        "at": 1825,
+        "what": "tick",
+        "totalRequests": 11
+      },
+      {
+        "at": 1844,
+        "what": "tick",
+        "totalRequests": 11
+      },
+      {
+        "at": 1860,
+        "what": "tick",
+        "totalRequests": 11
+      },
+      {
+        "at": 1881,
+        "what": "tick",
+        "totalRequests": 12
+      },
+      {
+        "at": 1903,
+        "what": "tick",
+        "totalRequests": 12
+      },
+      {
+        "at": 1920,
+        "what": "tick",
+        "totalRequests": 12
+      },
+      {
+        "at": 1944,
+        "what": "tick",
+        "totalRequests": 12
+      },
+      {
+        "at": 1960,
+        "what": "tick",
+        "totalRequests": 12
+      },
+      {
+        "at": 1981,
+        "what": "tick",
+        "totalRequests": 12
+      },
+      {
+        "at": 2001,
+        "what": "tick",
+        "totalRequests": 12
+      },
+      {
+        "at": 2025,
+        "what": "tick",
+        "totalRequests": 12
+      },
+      {
+        "at": 2045,
+        "what": "tick",
+        "totalRequests": 12
+      },
+      {
+        "at": 2062,
+        "what": "tick",
+        "totalRequests": 12
+      },
+      {
+        "at": 2080,
+        "what": "tick",
+        "totalRequests": 12
+      },
+      {
+        "at": 2101,
+        "what": "tick",
+        "totalRequests": 12
+      },
+      {
+        "at": 2125,
+        "what": "tick",
+        "totalRequests": 12
+      },
+      {
+        "at": 2145,
+        "what": "tick",
+        "totalRequests": 12
+      },
+      {
+        "at": 2162,
+        "what": "tick",
+        "totalRequests": 12
+      },
+      {
+        "at": 2181,
+        "what": "tick",
+        "totalRequests": 12
+      },
+      {
+        "at": 2201,
+        "what": "tick",
+        "totalRequests": 12
+      },
+      {
+        "at": 2220,
+        "what": "tick",
+        "totalRequests": 12
+      },
+      {
+        "at": 2241,
+        "what": "tick",
+        "totalRequests": 12
+      },
+      {
+        "at": 2260,
+        "what": "tick",
+        "totalRequests": 12
+      },
+      {
+        "at": 2280,
+        "what": "tick",
+        "totalRequests": 12
+      },
+      {
+        "at": 2301,
+        "what": "tick",
+        "totalRequests": 12
+      },
+      {
+        "at": 2325,
+        "what": "tick",
+        "totalRequests": 12
+      },
+      {
+        "at": 2344,
+        "what": "tick",
+        "totalRequests": 12
+      },
+      {
+        "at": 2361,
+        "what": "tick",
+        "totalRequests": 13
+      },
+      {
+        "at": 2380,
+        "what": "tick",
+        "totalRequests": 13
+      },
+      {
+        "at": 2401,
+        "what": "tick",
+        "totalRequests": 13
+      }
+    ],
+    "pulseRemoteEvents": [
+      {
+        "at": 203,
+        "what": "new-remote",
+        "candType": "prflx",
+        "port": 62506,
+        "address": ""
+      },
+      {
+        "at": 504,
+        "what": "new-remote",
+        "candType": "prflx",
+        "port": 55812,
+        "address": ""
+      },
+      {
+        "at": 626,
+        "what": "new-remote",
+        "candType": "prflx",
+        "port": 56724,
+        "address": ""
+      },
+      {
+        "at": 1104,
+        "what": "new-remote",
+        "candType": "prflx",
+        "port": 51868,
+        "address": ""
+      },
+      {
+        "at": 1225,
+        "what": "new-remote",
+        "candType": "prflx",
+        "port": 59125,
+        "address": ""
+      }
+    ],
+    "pulsesDecodedByPrflx": "01011001",
+    "senderStats": [
+      {
+        "state": "new",
+        "locals": [
+          55963,
+          58359
+        ],
+        "pairs": []
+      },
+      {
+        "state": "new",
+        "locals": [
+          57188,
+          58305
+        ],
+        "pairs": []
+      },
+      {
+        "state": "new",
+        "locals": [
+          53530,
+          60258
+        ],
+        "pairs": []
+      },
+      {
+        "state": "new",
+        "locals": [
+          58826,
+          57652
+        ],
+        "pairs": []
+      },
+      {
+        "state": "new",
+        "locals": [
+          65507,
+          50076
+        ],
+        "pairs": []
+      },
+      {
+        "state": "connected",
+        "locals": [
+          60898,
+          61363,
+          61363
+        ],
+        "pairs": [
+          {
+            "state": "succeeded",
+            "sent": 5,
+            "respRecv": 4
+          }
+        ]
+      }
+    ]
+  },
+  "logs": [
+    "start: target ip 192.168.0.100",
+    "E1/E2: munged local creds kept=true, forged answer accepted=true",
+    "E3: listener udp port 50469",
+    "E4: scanner connected=true in 106ms",
+    "E4-listener-raw: [{\"id\":\"CPOf00LYwZ_oxrMr733\",\"timestamp\":1791851208065.523,\"type\":\"candidate-pair\",\"bytesDiscardedOnSend\":0,\"bytesReceived\":216,\"bytesSent\":231,\"consentRequestsSent\":2,\"currentRoundTripTime\":0.001,\"lastPacketReceivedTimestamp\":1791851207410,\"lastPacketSentTimestamp\":1791851207410,\"localCandidateId\":\"IOf00LYwZ\",\"nominated\":true,\"packetsDiscardedOnSend\":0,\"packetsReceived\":1,\"packetsSent\":2,\"priority\":7926337542591364000,\"remoteCandidateId\":\"IoxrMr733\",\"requestsReceived\":2,\"requestsSent\":3,\"responsesReceived\":3,\"responsesSent\":2,\"state\":\"succeeded\",\"totalRoundTripTime\":0.003,\"transportId\":\"T01\",\"writable\":true},{\"id\":\"IoxrMr733\",\"timestamp\":1791851208065.523,\"type\":\"remote-candidate\",\"address\":\"\",\"candidateType\":\"prflx\",\"foundation\":\"4266548260\",\"ip\":\"\",\"isRemote\":true,\"port\":61363,\"priority\":1845501695,\"protocol\":\"udp\",\"transportId\":\"T01\",\"usernameFragment\":\"AC24aa\"}]",
+    "E5: building 10 pulse connections (each with a data channel m-line)",
+    "E5: pool ready (10)",
+    "E5: baseline remote candidates=1",
+    "E5-result: sent=10110011 decoded=01011001 sends=[{\"bit\":0,\"result\":\"added\"},{\"bit\":2,\"result\":\"added\"},{\"bit\":3,\"result\":\"added\"},{\"bit\":6,\"result\":\"added\"},{\"bit\":7,\"result\":\"added\"}]",
+    "E5-remote-events: [{\"at\":203,\"what\":\"new-remote\",\"candType\":\"prflx\",\"port\":62506,\"address\":\"\"},{\"at\":504,\"what\":\"new-remote\",\"candType\":\"prflx\",\"port\":55812,\"address\":\"\"},{\"at\":626,\"what\":\"new-remote\",\"candType\":\"prflx\",\"port\":56724,\"address\":\"\"},{\"at\":1104,\"what\":\"new-remote\",\"candType\":\"prflx\",\"port\":51868,\"address\":\"\"},{\"at\":1225,\"what\":\"new-remote\",\"candType\":\"prflx\",\"port\":59125,\"address\":\"\"}]",
+    "E5-senders: [{\"state\":\"new\",\"locals\":[55963,58359],\"pairs\":[]},{\"state\":\"new\",\"locals\":[57188,58305],\"pairs\":[]},{\"state\":\"new\",\"locals\":[53530,60258],\"pairs\":[]},{\"state\":\"new\",\"locals\":[58826,57652],\"pairs\":[]},{\"state\":\"new\",\"locals\":[65507,50076],\"pairs\":[]},{\"state\":\"connected\",\"locals\":[60898,61363,61363],\"pairs\":[{\"state\":\"succeeded\",\"sent\":5,\"respRecv\":4}]}]"
+  ]
+}
+Starting server 1/1: python3 -m http.server 8123 --directory /Users/rohan/eagle/project/tmp/autoconnect
+Waiting for server on port 8123...
+Server ready on port 8123
+
+All 1 server(s) ready
+Running: /tmp/webtest-venv/bin/python tmp/autoconnect/run-spike.py 192.168.0.100 8123 spike.html 120000
+
+
+Stopping 1 server(s)...
+Server 1 stopped
+All servers stopped

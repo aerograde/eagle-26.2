@@ -1,0 +1,130 @@
+URL: http://127.0.0.1:8123/spike5.html
+CONSOLE: [spike] start: payload length 84
+CONSOLE: [spike] listener: {"address":"a11b5def-3b07-4852-b0d0-56da3f0b5218.local","port":64520}
+CONSOLE: [spike] listener-candidates: [{"kind":"local-candidate","candType":"host","port":64520,"ufrag":"AC24aa","address":"","foundation":"2247472583","priority":2113937151},{"kind":"remote-candidate","candType":"prflx","port":57110,"address":"","foundation":"3490265252","priority":1845501695},{"kind":"local-candidate","candType":"host","port":61507,"ufrag":"AC24aa","address":"","foundation":"707780678","priority":2113929727},{"kind":"local-candidate","candType":"host","port":9,"ufrag":"AC24aa","address":"","foundation":"3565499602","priority":1509949951},{"kind":"local-candidate","candType":"host","port":9,"ufrag":"AC24aa","address":"","foundation":"3517632553","priority":1509957375}]
+CONSOLE: [spike] sender-candidates: [{"kind":"local-candidate","candType":"host","port":57980,"ufrag":"PAYLOAD0123456789abcdefghijklmnopqrstuvwxyzNAMEf95c381356db4f6ba6c4e94edd1eb4f4local","address":"","foundation":"2659995574","priority":2113929727},{"kind":"remote-candidate","candType":"host","port":64520,"ufrag":"AC24aa","address":"","foundation":"1","priority":2130706431},{"kind":"local-candidate","candType":"host","port":57110,"ufrag":"PAYLOAD0123456789abcdefghijklmnopqrstuvwxyzNAMEf95c381356db4f6ba6c4e94edd1eb4f4local","address":"","foundation":"827726391","priority":2113937151},{"kind":"local-candidate","candType":"host","port":9,"ufrag":"PAYLOAD0123456789abcdefghijklmnopqrstuvwxyzNAMEf95c381356db4f6ba6c4e94edd1eb4f4local","address":"","foundation":"1613142818","priority":1509949951},{"kind":"local-candidate","candType":"host","port":9,"ufrag":"PAYLOAD0123456789abcdefghijklmnopqrstuvwxyzNAMEf95c381356db4f6ba6c4e94edd1eb4f4local","address":"","foundation":"1695121369","priority":1509957375}]
+CONSOLE: [spike] states: checking / connected
+CONSOLE: [spike] verdict: ufrag not exposed: ["AC24aa",null,"AC24aa","AC24aa","AC24aa"]
+=== RESULT ===
+{
+  "ok": true,
+  "error": null,
+  "steps": {
+    "listenerCandidates": [
+      {
+        "kind": "local-candidate",
+        "candType": "host",
+        "port": 64520,
+        "ufrag": "AC24aa",
+        "address": "",
+        "foundation": "2247472583",
+        "priority": 2113937151
+      },
+      {
+        "kind": "remote-candidate",
+        "candType": "prflx",
+        "port": 57110,
+        "ufrag": null,
+        "address": "",
+        "foundation": "3490265252",
+        "priority": 1845501695
+      },
+      {
+        "kind": "local-candidate",
+        "candType": "host",
+        "port": 61507,
+        "ufrag": "AC24aa",
+        "address": "",
+        "foundation": "707780678",
+        "priority": 2113929727
+      },
+      {
+        "kind": "local-candidate",
+        "candType": "host",
+        "port": 9,
+        "ufrag": "AC24aa",
+        "address": "",
+        "foundation": "3565499602",
+        "priority": 1509949951
+      },
+      {
+        "kind": "local-candidate",
+        "candType": "host",
+        "port": 9,
+        "ufrag": "AC24aa",
+        "address": "",
+        "foundation": "3517632553",
+        "priority": 1509957375
+      }
+    ],
+    "senderCandidates": [
+      {
+        "kind": "local-candidate",
+        "candType": "host",
+        "port": 57980,
+        "ufrag": "PAYLOAD0123456789abcdefghijklmnopqrstuvwxyzNAMEf95c381356db4f6ba6c4e94edd1eb4f4local",
+        "address": "",
+        "foundation": "2659995574",
+        "priority": 2113929727
+      },
+      {
+        "kind": "remote-candidate",
+        "candType": "host",
+        "port": 64520,
+        "ufrag": "AC24aa",
+        "address": "",
+        "foundation": "1",
+        "priority": 2130706431
+      },
+      {
+        "kind": "local-candidate",
+        "candType": "host",
+        "port": 57110,
+        "ufrag": "PAYLOAD0123456789abcdefghijklmnopqrstuvwxyzNAMEf95c381356db4f6ba6c4e94edd1eb4f4local",
+        "address": "",
+        "foundation": "827726391",
+        "priority": 2113937151
+      },
+      {
+        "kind": "local-candidate",
+        "candType": "host",
+        "port": 9,
+        "ufrag": "PAYLOAD0123456789abcdefghijklmnopqrstuvwxyzNAMEf95c381356db4f6ba6c4e94edd1eb4f4local",
+        "address": "",
+        "foundation": "1613142818",
+        "priority": 1509949951
+      },
+      {
+        "kind": "local-candidate",
+        "candType": "host",
+        "port": 9,
+        "ufrag": "PAYLOAD0123456789abcdefghijklmnopqrstuvwxyzNAMEf95c381356db4f6ba6c4e94edd1eb4f4local",
+        "address": "",
+        "foundation": "1695121369",
+        "priority": 1509957375
+      }
+    ],
+    "payload": "PAYLOAD0123456789abcdefghijklmnopqrstuvwxyzNAMEf95c381356db4f6ba6c4e94edd1eb4f4local",
+    "listenerState": "checking",
+    "senderState": "connected"
+  },
+  "logs": [
+    "start: payload length 84",
+    "listener: {\"address\":\"a11b5def-3b07-4852-b0d0-56da3f0b5218.local\",\"port\":64520}",
+    "listener-candidates: [{\"kind\":\"local-candidate\",\"candType\":\"host\",\"port\":64520,\"ufrag\":\"AC24aa\",\"address\":\"\",\"foundation\":\"2247472583\",\"priority\":2113937151},{\"kind\":\"remote-candidate\",\"candType\":\"prflx\",\"port\":57110,\"address\":\"\",\"foundation\":\"3490265252\",\"priority\":1845501695},{\"kind\":\"local-candidate\",\"candType\":\"host\",\"port\":61507,\"ufrag\":\"AC24aa\",\"address\":\"\",\"foundation\":\"707780678\",\"priority\":2113929727},{\"kind\":\"local-candidate\",\"candType\":\"host\",\"port\":9,\"ufrag\":\"AC24aa\",\"address\":\"\",\"foundation\":\"3565499602\",\"priority\":1509949951},{\"kind\":\"local-candidate\",\"candType\":\"host\",\"port\":9,\"ufrag\":\"AC24aa\",\"address\":\"\",\"foundation\":\"3517632553\",\"priority\":1509957375}]",
+    "sender-candidates: [{\"kind\":\"local-candidate\",\"candType\":\"host\",\"port\":57980,\"ufrag\":\"PAYLOAD0123456789abcdefghijklmnopqrstuvwxyzNAMEf95c381356db4f6ba6c4e94edd1eb4f4local\",\"address\":\"\",\"foundation\":\"2659995574\",\"priority\":2113929727},{\"kind\":\"remote-candidate\",\"candType\":\"host\",\"port\":64520,\"ufrag\":\"AC24aa\",\"address\":\"\",\"foundation\":\"1\",\"priority\":2130706431},{\"kind\":\"local-candidate\",\"candType\":\"host\",\"port\":57110,\"ufrag\":\"PAYLOAD0123456789abcdefghijklmnopqrstuvwxyzNAMEf95c381356db4f6ba6c4e94edd1eb4f4local\",\"address\":\"\",\"foundation\":\"827726391\",\"priority\":2113937151},{\"kind\":\"local-candidate\",\"candType\":\"host\",\"port\":9,\"ufrag\":\"PAYLOAD0123456789abcdefghijklmnopqrstuvwxyzNAMEf95c381356db4f6ba6c4e94edd1eb4f4local\",\"address\":\"\",\"foundation\":\"1613142818\",\"priority\":1509949951},{\"kind\":\"local-candidate\",\"candType\":\"host\",\"port\":9,\"ufrag\":\"PAYLOAD0123456789abcdefghijklmnopqrstuvwxyzNAMEf95c381356db4f6ba6c4e94edd1eb4f4local\",\"address\":\"\",\"foundation\":\"1695121369\",\"priority\":1509957375}]",
+    "states: checking / connected",
+    "verdict: ufrag not exposed: [\"AC24aa\",null,\"AC24aa\",\"AC24aa\",\"AC24aa\"]"
+  ]
+}
+Starting server 1/1: python3 -m http.server 8123 --directory /Users/rohan/eagle/project/tmp/autoconnect
+Waiting for server on port 8123...
+Server ready on port 8123
+
+All 1 server(s) ready
+Running: /tmp/webtest-venv/bin/python tmp/autoconnect/run-spike.py 8123 spike5.html  120000
+
+
+Stopping 1 server(s)...
+Server 1 stopped
+All servers stopped

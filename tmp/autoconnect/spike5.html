@@ -1,0 +1,118 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>AutoConnect ufrag carrier probe</title></head>
+<body>
+<pre id="out" style="font:12px monospace;white-space:pre-wrap"></pre>
+<script>
+(function () {
+  "use strict";
+  var UFRAG = "AC24aa", PWD = "AC24shared7xpadded000000";
+  var out = document.getElementById("out");
+  var RESULT = { ok: false, error: null, steps: {}, logs: [] };
+  window.__spike = RESULT;
+  function say(k, m) {
+    var line = k + ": " + (typeof m === "string" ? m : JSON.stringify(m));
+    RESULT.logs.push(line);
+    console.log("[spike] " + line);
+    out.textContent += line + "\n";
+  }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function dummyFp() { var p = []; for (var i = 0; i < 32; i++) p.push("AB"); return p.join(":"); }
+  function forgeAnswer(localSdp, remoteUfrag) {
+    var lines = String(localSdp).split(/\r\n|\n/), kept = [];
+    for (var i = 0; i < lines.length; i++) {
+      var L = lines[i].replace(/\r$/, "");
+      if (L === "") continue;
+      if (/^a=candidate:/.test(L)) continue;
+      if (/^a=ice-ufrag:/.test(L)) { kept.push("a=ice-ufrag:" + remoteUfrag); continue; }
+      if (/^a=ice-pwd:/.test(L)) { kept.push("a=ice-pwd:" + PWD); continue; }
+      if (/^a=fingerprint:/.test(L)) { kept.push("a=fingerprint:sha-256 " + dummyFp()); continue; }
+      if (/^a=setup:/.test(L)) { kept.push("a=setup:passive"); continue; }
+      kept.push(L);
+    }
+    return kept.join("\r\n") + "\r\n";
+  }
+  // localUfrag can be any 4..256 char token: it is what the peer sees in the
+  // check's USERNAME, so it can act as a per-connection data carrier.
+  function makeSharedPc(localUfrag, remoteUfrag) {
+    var pc = new RTCPeerConnection({ iceServers: [] });
+    pc.createDataChannel("probe", { ordered: true });
+    return pc.createOffer().then(function (offer) {
+      var sdp = offer.sdp
+        .replace(/a=ice-ufrag:[^\r\n]*/g, "a=ice-ufrag:" + localUfrag)
+        .replace(/a=ice-pwd:[^\r\n]*/g, "a=ice-pwd:" + PWD);
+      return pc.setLocalDescription({ type: "offer", sdp: sdp });
+    }).then(function () {
+      return pc.setRemoteDescription({ type: "answer", sdp: forgeAnswer(pc.localDescription.sdp, remoteUfrag || UFRAG) });
+    }).then(function () { return pc; });
+  }
+  function ownPort(pc) {
+    return sleep(600).then(function () {
+      var lines = (pc.localDescription.sdp || "").split(/\r\n|\n/);
+      for (var i = 0; i < lines.length; i++) {
+        var m = /a=candidate:\S+ \d+ udp \d+ (\S+) (\d+) typ host/.exec(lines[i]);
+        if (m) return { address: m[1], port: parseInt(m[2], 10) };
+      }
+      return null;
+    });
+  }
+  function dumpRemote(pc) {
+    return pc.getStats().then(function (stats) {
+      var rows = [];
+      stats.forEach(function (s) {
+        if (s.type === "remote-candidate" || s.type === "local-candidate") {
+          rows.push({
+            kind: s.type, candType: s.candidateType, port: s.port,
+            ufrag: s.usernameFragment, address: s.address,
+            foundation: s.foundation, priority: s.priority
+          });
+        }
+      });
+      return rows;
+    });
+  }
+  function cand(addr, port) {
+    return { candidate: "candidate:1 1 udp 2130706431 " + addr + " " + port + " typ host", sdpMid: "0", sdpMLineIndex: 0 };
+  }
+
+  function run() {
+    var payload = "PAYLOAD0123456789abcdefghijklmnopqrstuvwxyzNAMEf95c381356db4f6ba6c4e94edd1eb4f4local";
+    var listener = null, sender = null, lt = null;
+    say("start", "payload length " + payload.length);
+    // The listener must carry the ufrag the sender expects as its remote ufrag,
+    // and vice versa: the sender's local ufrag is the carrier.
+    return makeSharedPc(UFRAG, UFRAG).then(function (pc) {
+      listener = pc;
+      return ownPort(pc);
+    }).then(function (c) {
+      lt = c;
+      say("listener", c);
+      return makeSharedPc(payload, UFRAG);
+    }).then(function (pc) {
+      sender = pc;
+      return pc.addIceCandidate(cand(lt.address, lt.port)).then(function () { return sleep(2500); });
+    }).then(function () {
+      return Promise.all([dumpRemote(listener), dumpRemote(sender), sleep(0)]).then(function (r) {
+        RESULT.steps.listenerCandidates = r[0];
+        RESULT.steps.senderCandidates = r[1];
+        RESULT.steps.payload = payload;
+        RESULT.steps.listenerState = listener.iceConnectionState;
+        RESULT.steps.senderState = sender.iceConnectionState;
+        say("listener-candidates", r[0]);
+        say("sender-candidates", r[1]);
+        say("states", listener.iceConnectionState + " / " + sender.iceConnectionState);
+        var carried = r[0].filter(function (row) {
+          return row.kind === "remote-candidate" && String(row.ufrag || "") === payload;
+        });
+        say("verdict", carried.length
+          ? "UFRAG CARRIED TO THE PEER: " + JSON.stringify(carried)
+          : "ufrag not exposed: " + JSON.stringify(r[0].map(function (x) { return x.ufrag; })));
+      });
+    }).then(function () { RESULT.ok = true; })
+      .catch(function (err) { RESULT.error = String(err && err.message ? err.message : err); say("ERROR", RESULT.error); });
+  }
+  try { run(); } catch (e) { RESULT.error = String(e); say("THROW", RESULT.error); }
+})();
+</script>
+</body>
+</html>

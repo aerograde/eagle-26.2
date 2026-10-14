@@ -1,0 +1,126 @@
+[recv] [spike9] listener-ports: [63989,59291]
+listener port: 63989 addr: 192.168.0.100
+[send] [spike9] sources-ready: {"count":100,"withPorts":100}
+[recv] [spike9] raw-candidate-pair: {"id":"CP5zDt1/gC_XQfw2tb8","timestamp":1791930488319.901,"type":"candidate-pair","bytesDiscardedOnSend":0,"bytesReceived":0,"bytesSent":216,"consentRequestsSent":0,"currentRoundTripTime":0.001,"lastPacketSentTimestamp":1791930488286,"localCandidateId":"I5zDt1/gC","nominated":true,"packetsDiscardedOnSend":0,"packetsReceived":0,"packetsSent":1,"priority":7926337542591364000,"remoteCandidateId":"IXQfw2tb8","requestsReceived":0,"requestsSent":1,"responsesReceived":1,"responsesSent":0,"state":"succeeded","totalRoundTripTime":0.001,"transportId":"T01","writable":true}
+[recv] [spike9] raw-remote-candidate: {"id":"IXQfw2tb8","timestamp":1791930488319.901,"type":"remote-candidate","address":"","candidateType":"prflx","foundation":"2232370332","ip":"","isRemote":true,"port":61865,"priority":1845501695,"protocol":"udp","transportId":"T01","usernameFragment":"AC24aa"}
+[send] [spike9] fired: 169
+[send] [spike9] done: true
+[recv] [spike9] poll-summary: {"polls":13598,"arrivals":94,"reports":13598,"repeatedReportTs":12089,"disappeared":0,"snapshots":80}
+[recv] [spike9] done: true
+
+=== SENDER ===
+sources: 100, pulses fired: 169, error: None
+
+=== RECEIVER ===
+polls: 13598  arrivals: 94  error: None
+raw remote-candidate fields: {"id": "IXQfw2tb8", "timestamp": 1791930488319.901, "type": "remote-candidate", "address": "", "candidateType": "prflx", "foundation": "2232370332", "ip": "", "isRemote": true, "port": 61865, "priority": 1845501695, "protocol": "udp", "transportId": "T01", "usernameFragment": "AC24aa"}
+raw candidate-pair fields: {"id": "CP5zDt1/gC_XQfw2tb8", "timestamp": 1791930488319.901, "type": "candidate-pair", "bytesDiscardedOnSend": 0, "bytesReceived": 0, "bytesSent": 216, "consentRequestsSent": 0, "currentRoundTripTime": 0.001, "lastPacketSentTimestamp": 1791930488286, "localCandidateId": "I5zDt1/gC", "nominated": true, "packetsDiscardedOnSend": 0, "packetsReceived": 0, "packetsSent": 1, "priority": 7926337542591364000, "remoteCandidateId": "IXQfw2tb8", "requestsReceived": 0, "requestsSent": 1, "responsesReceived": 1, "responsesSent": 0, "state": "succeeded", "totalRoundTripTime": 0.001, "transportId": "T01", "writable": true}
+
+=== PULSE -> VISIBILITY (ms from addIceCandidate to the poll that saw the pair) ===
+baseline           n=10 min=6 median=30 p90=52 max=53                            never-seen=0
+bulk               n=32 min=48 median=51 p90=53 max=53                           never-seen=0
+burst              n=8 min=22 median=23 p90=23 max=23                            never-seen=0
+loadcheck          n=3 min=1540 median=1540 p90=2074 max=2074                    never-seen=69
+pacer-pulse:src20wait0 none                                                          never-seen=1
+pacer-pulse:src22wait0 none                                                          never-seen=1
+pacer-pulse:src24wait2000 none                                                          never-seen=1
+repeat:shot0       n=1 min=7 median=7 p90=7 max=7                                never-seen=0
+repeat:shot1       none                                                          never-seen=1
+repeat:shot2       none                                                          never-seen=1
+repeat:shot3       none                                                          never-seen=1
+slot:slot0         n=4 min=14 median=14 p90=15 max=15                            never-seen=0
+slot:slot1         n=4 min=29 median=29 p90=29 max=29                            never-seen=0
+slot:slot2         n=4 min=38 median=38 p90=38 max=38                            never-seen=0
+slot:slot3         n=4 min=45 median=45 p90=45 max=45                            never-seen=0
+slot:slot4         n=4 min=5 median=5 p90=6 max=6                                never-seen=0
+slot:slot5         n=4 min=21 median=21 p90=21 max=21                            never-seen=0
+slot:slot6         n=4 min=28 median=28 p90=28 max=28                            never-seen=0
+slot:slot7         n=4 min=31 median=31 p90=31 max=31                            never-seen=0
+slot:slot8         n=4 min=42 median=43 p90=43 max=43                            never-seen=0
+slot:slot9         n=4 min=4 median=4 p90=4 max=4                                never-seen=0
+
+baseline+burst delay: n=18 min=6 median=23 p90=47 max=53
+
+repeat phase (same source, same target, 4 shots): [{"kind": "repeat", "label": "shot0", "i": 18, "delay": 7, "port": 62459, "pollIndex": 1809}, {"kind": "repeat", "label": "shot1", "i": 18, "delay": null, "port": 50138, "pollIndex": null}, {"kind": "repeat", "label": "shot2", "i": 18, "delay": null, "port": 50138, "pollIndex": null}, {"kind": "repeat", "label": "shot3", "i": 18, "delay": null, "port": 50138, "pollIndex": null}]
+repeat: arrivals for that source port: 1 (a repeat creates no new candidate if < 4)
+  counter change at 1791930494789: req=0 resp=0 state=waiting crtt=None
+  counter change at 1791930494952: req=1 resp=0 state=waiting crtt=None
+  counter change at 1791930495006: req=1 resp=1 state=succeeded crtt=0.001
+  counter change at 1791930496064: req=2 resp=1 state=succeeded crtt=0.001
+  counter change at 1791930497125: req=3 resp=1 state=succeeded crtt=0.001
+  counter change at 1791930498201: req=4 resp=1 state=succeeded crtt=0.001
+  counter change at 1791930499244: req=5 resp=1 state=succeeded crtt=0.001
+  counter change at 1791930501921: req=6 resp=1 state=succeeded crtt=0.001
+  counter change at 1791930504569: req=7 resp=1 state=succeeded crtt=0.001
+  counter change at 1791930507201: req=8 resp=1 state=succeeded crtt=0.001
+  counter change at 1791930509875: req=9 resp=1 state=succeeded crtt=0.001
+  counter change at 1791930512509: req=10 resp=1 state=succeeded crtt=0.001
+  counter change at 1791930515193: req=11 resp=1 state=succeeded crtt=0.001
+  counter change at 1791930517835: req=12 resp=1 state=succeeded crtt=0.001
+  counter change at 1791930520491: req=13 resp=1 state=succeeded crtt=0.001
+  counter change at 1791930523154: req=14 resp=1 state=succeeded crtt=0.001
+  counter change at 1791930525826: req=15 resp=1 state=succeeded crtt=0.001
+  counter change at 1791930528448: req=16 resp=1 state=succeeded crtt=0.001
+  counter change at 1791930531117: req=17 resp=1 state=succeeded crtt=0.001
+  counter change at 1791930533772: req=18 resp=1 state=succeeded crtt=0.001
+  counter change at 1791930536416: req=19 resp=1 state=succeeded crtt=0.001
+  counter change at 1791930539096: req=20 resp=1 state=succeeded crtt=0.001
+  counter change at 1791930541730: req=21 resp=1 state=succeeded crtt=0.001
+  counter change at 1791930544402: req=22 resp=1 state=succeeded crtt=0.001
+  counter change at 1791930547066: req=23 resp=1 state=succeeded crtt=0.001
+  counter change at 1791930549720: req=24 resp=1 state=succeeded crtt=0.001
+  counter change at 1791930552351: req=25 resp=1 state=succeeded crtt=0.001
+  counter change at 1791930555008: req=26 resp=1 state=succeeded crtt=0.001
+  counter change at 1791930557666: req=27 resp=1 state=succeeded crtt=0.001
+  counter change at 1791930560325: req=28 resp=1 state=succeeded crtt=0.001
+  counter change at 1791930563008: req=29 resp=1 state=succeeded crtt=0.001
+  counter change at 1791930565666: req=30 resp=1 state=succeeded crtt=0.001
+
+=== POLL COST ===
+getStats() duration: n=2737 min=0 median=0 p90=1 max=55
+  pairs    0-  24: n=1086 min=0 median=0 p90=1 max=6
+  pairs   25-  49: n=49 min=0 median=0 p90=1 max=8
+  pairs   50-  74: n=83 min=0 median=0 p90=1 max=1
+  pairs   75-  99: n=1519 min=0 median=0 p90=1 max=55
+gap between poll completion and next poll start: n=2736 min=4 median=30 p90=33 max=140
+
+=== REPORT TIMESTAMP (identical across consecutive polls means a cached report) ===
+polls=13598 distinct report timestamps=1509 adjacent-identical=12089
+delta between distinct report timestamps: n=1508 min=50.0048828125 median=52.8330078125 p90=55.541015625 max=96.57421875
+
+=== PRUNING ===
+disappearances: 0
+snapshots (t, pairs, prflx): [[1791930485904, 0, 0], [1791930486906, 0, 0], [1791930487907, 0, 0], [1791930488910, 2, 2], [1791930489915, 4, 4], [1791930490918, 7, 7], [1791930491919, 10, 10], [1791930492923, 10, 10], [1791930493928, 18, 18], [1791930494932, 19, 19], [1791930495934, 19, 19], [1791930496936, 19, 19], [1791930497937, 19, 19], [1791930498938, 20, 20], [1791930499939, 20, 20], [1791930500944, 20, 20], [1791930501949, 20, 20], [1791930502954, 21, 21], [1791930503957, 21, 21], [1791930504959, 21, 21], [1791930505961, 21, 21], [1791930506964, 21, 21], [1791930507969, 22, 22], [1791930508970, 22, 22], [1791930509971, 22, 22], [1791930510973, 22, 22], [1791930511978, 22, 22], [1791930512980, 22, 22], [1791930513982, 38, 38], [1791930514985, 58, 58], [1791930515987, 62, 62], [1791930516992, 94, 94], [1791930517993, 94, 94], [1791930518995, 94, 94], [1791930519996, 94, 94], [1791930520997, 94, 94], [1791930522000, 94, 94], [1791930523001, 94, 94], [1791930524006, 94, 94], [1791930525008, 94, 94]]
+max pairs seen: 94  max prflx: 94
+
+=== ARRIVAL CLUSTERING (how many new pairs one poll reported) ===
+new pairs per poll: {1: 14, 4: 10, 8: 1, 32: 1}
+largest single-poll groups: [(6008, 32), (1518, 8), (5390, 4), (5428, 4), (5465, 4), (5504, 4)]
+
+=== MINI PAYLOAD: 10 slots x 4 sources, 200 ms apart ===
+  slot0: 4/4 seen, delays [15, 14, 14, 14]
+  slot1: 4/4 seen, delays [29, 29, 29, 29]
+  slot2: 4/4 seen, delays [38, 38, 38, 38]
+  slot3: 4/4 seen, delays [45, 45, 45, 45]
+  slot4: 4/4 seen, delays [6, 5, 5, 5]
+  slot5: 4/4 seen, delays [21, 21, 21, 21]
+  slot6: 4/4 seen, delays [28, 28, 28, 28]
+  slot7: 4/4 seen, delays [31, 31, 31, 31]
+  slot8: 4/4 seen, delays [43, 43, 42, 42]
+  slot9: 4/4 seen, delays [4, 4, 4, 4]
+
+=== VERDICT NUMBERS ===
+fired=169 seen=94 never-seen=75
+baseline/burst median delay: 23 (slot is 200 ms)
+Starting server 1/1: python3 -m http.server 8124 --directory /Users/rohan/eagle/project
+Waiting for server on port 8124...
+Server ready on port 8124
+
+All 1 server(s) ready
+Running: /tmp/webtest-venv/bin/python tmp/autoconnect/run-spike9.py 8124 192.168.0.100 80000
+
+
+Stopping 1 server(s)...
+Server 1 stopped
+All servers stopped
+EXIT=0

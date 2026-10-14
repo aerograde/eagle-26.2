@@ -10,13 +10,16 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
+import net.lax1dude.eaglercraft.v1_8.lan.AutoConnect;
 import net.lax1dude.eaglercraft.v1_8.lan.LANDiscovery;
 import net.lax1dude.eaglercraft.v1_8.log4j.LogManager;
 import net.lax1dude.eaglercraft.v1_8.log4j.Logger;
 import net.lax1dude.eaglercraft.v1_8.sp.SingleplayerServerController26;
+import net.lax1dude.eaglercraft.v1_8.sp.gui.EaglerAutoConnectCodeScreen;
 import net.lax1dude.eaglercraft.v1_8.sp.gui.EaglerDirectConnectHostScreen;
 import net.lax1dude.eaglercraft.v1_8.sp.gui.EaglerDirectConnectJoinScreen;
 import net.lax1dude.eaglercraft.v1_8.sp.gui.EaglerLANInviteScreen;
+import net.lax1dude.eaglercraft.v1_8.sp.gui.EaglerLANPeersScreen;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.ConnectScreen;
 import net.minecraft.client.gui.screens.Screen;
@@ -56,8 +59,16 @@ public final class LANInvites {
 	private static final int INVITE_EXPIRY_TICKS = 1200;
 	private static final int MAX_TICK_FAILURES = 60;
 
+	/**
+	 * Peer-id prefix for a player the serverless AutoConnect module found. The
+	 * two peer sources share one list, and the prefix routes a message back to
+	 * the module that owns that peer.
+	 */
+	private static final String AUTO_PREFIX = "ac:";
+
 	private static boolean disabled;
 	private static int failures;
+	private static boolean autoConnectPrompted;
 
 	private static final Logger logger = LogManager.getLogger("LANInvites");
 
@@ -120,9 +131,10 @@ public final class LANInvites {
 	private LANInvites() {
 	}
 
-	/** True when this page can find peers at all. */
+	/** True when this page can find peers at all, with or without a server. */
 	public static boolean isAvailable() {
-		return LANDiscovery.isInstalled() && LANDiscovery.isServiceAvailable();
+		return AutoConnect.isInstalled()
+				|| (LANDiscovery.isInstalled() && LANDiscovery.isServiceAvailable());
 	}
 
 	/** Peers discovered on this network, most recent presence list. */
@@ -186,11 +198,10 @@ public final class LANInvites {
 		if(noticeTicks > 0 && --noticeTicks == 0) {
 			notice = null;
 		}
-		if(!LANDiscovery.isInstalled()) {
-			return;
-		}
-		if(!LANDiscovery.isServiceAvailable()) {
-			// Parked: an origin without the service keeps the manual flow only.
+		boolean discovery = LANDiscovery.isInstalled() && LANDiscovery.isServiceAvailable();
+		boolean autoConnect = AutoConnect.isInstalled();
+		if(!discovery && !autoConnect) {
+			// Parked: neither peer source is live, so the manual flow is all there is.
 			if(!peers.isEmpty()) {
 				peers = Collections.emptyList();
 			}
@@ -203,10 +214,51 @@ public final class LANInvites {
 		if(minecraft == null) {
 			return;
 		}
+		if(autoConnect) {
+			ensureAutoConnectStarted(minecraft.gui.screen());
+		}
 		refreshPeers();
-		drainEvents(minecraft);
+		if(discovery) {
+			drainEvents(minecraft);
+		}
+		if(autoConnect) {
+			drainAutoConnectEvents(minecraft);
+		}
 		ageInvites();
 		presentInvite(minecraft);
+		presentAutoConnectPrompt(minecraft);
+	}
+
+	/**
+	 * The plan's first tier is meant to need no clicks. The pool it builds spends
+	 * most of the page's lifetime WebRTC connection budget, so it starts when the
+	 * player is actually looking for players - the online list, the host room or
+	 * the code screen - instead of at boot. The code fallback starts it explicitly.
+	 */
+	private static void ensureAutoConnectStarted(Screen current) {
+		if(current instanceof EaglerLANPeersScreen || current instanceof EaglerDirectConnectHostScreen
+				|| current instanceof EaglerAutoConnectCodeScreen) {
+			AutoConnect.start(localName());
+		}
+	}
+
+	/**
+	 * The plan's fallback prompt: once the 20-second budget has passed with no
+	 * peer connected, offer the 6-character code - but only where a screen can be
+	 * shown without interrupting something, the rule the invite dialog follows.
+	 */
+	private static void presentAutoConnectPrompt(Minecraft minecraft) {
+		if(autoConnectPrompted || !AutoConnect.isInstalled() || !AutoConnect.isFallback()) {
+			return;
+		}
+		if(!peers.isEmpty() || !backlog.isEmpty()) {
+			return;
+		}
+		Screen current = minecraft.gui.screen();
+		if(current instanceof TitleScreen || current instanceof EaglerLANPeersScreen) {
+			autoConnectPrompted = true;
+			minecraft.gui.setScreen(new EaglerAutoConnectCodeScreen(current));
+		}
 	}
 
 	/**
@@ -215,24 +267,51 @@ public final class LANInvites {
 	 */
 	private static void refreshPeers() {
 		List<Peer> next = new ArrayList<Peer>();
-		try {
-			JsonElement root = JsonParser.parseString(LANDiscovery.getPeersJson());
-			if(root.isJsonArray()) {
-				for(JsonElement element : root.getAsJsonArray()) {
-					if(!element.isJsonObject()) {
-						continue;
+		if(LANDiscovery.isInstalled() && LANDiscovery.isServiceAvailable()) {
+			try {
+				JsonElement root = JsonParser.parseString(LANDiscovery.getPeersJson());
+				if(root.isJsonArray()) {
+					for(JsonElement element : root.getAsJsonArray()) {
+						if(!element.isJsonObject()) {
+							continue;
+						}
+						JsonObject object = element.getAsJsonObject();
+						String id = string(object, "id");
+						if(id == null || id.isEmpty()) {
+							continue;
+						}
+						next.add(new Peer(id, string(object, "name"), stringOr(object, "state", "found"),
+								string(object, "addr"), intOr(object, "rttMs", -1)));
 					}
-					JsonObject object = element.getAsJsonObject();
-					String id = string(object, "id");
-					if(id == null || id.isEmpty()) {
-						continue;
-					}
-					next.add(new Peer(id, string(object, "name"), stringOr(object, "state", "found"),
-							string(object, "addr"), intOr(object, "rttMs", -1)));
 				}
+			}catch(Throwable t) {
+				// A malformed presence list costs the peers it carried, not the tick.
 			}
-		}catch(Throwable t) {
-			next = Collections.emptyList();
+		}
+		if(AutoConnect.isInstalled()) {
+			try {
+				JsonElement root = JsonParser.parseString(AutoConnect.getPeersJson());
+				if(root.isJsonArray()) {
+					for(JsonElement element : root.getAsJsonArray()) {
+						if(!element.isJsonObject()) {
+							continue;
+						}
+						JsonObject object = element.getAsJsonObject();
+						String id = string(object, "id");
+						if(id == null || id.isEmpty()) {
+							continue;
+						}
+						int port = intOr(object, "port", -1);
+						String address = string(object, "address");
+						String autoState = stringOr(object, "state", "found");
+						next.add(new Peer(AUTO_PREFIX + id, "Player " + id,
+								"connected".equals(autoState) ? "open" : "found",
+								address == null ? null : address + (port > 0 ? ":" + port : ""), -1));
+					}
+				}
+			}catch(Throwable t) {
+				// Same rule for the AutoConnect list.
+			}
 		}
 		peers = next;
 	}
@@ -263,6 +342,76 @@ public final class LANInvites {
 		}
 	}
 
+	/**
+	 * Drains the serverless module's events. The transport is the same as the
+	 * discovery service's: an invite envelope over the peer data channel, answered
+	 * with the ordinary direct-connect answer code.
+	 */
+	private static void drainAutoConnectEvents(Minecraft minecraft) {
+		String raw = AutoConnect.pollEventsJson();
+		if(raw == null || raw.isEmpty()) {
+			return;
+		}
+		JsonElement root;
+		try {
+			root = JsonParser.parseString(raw);
+		}catch(Throwable t) {
+			return;
+		}
+		if(!root.isJsonArray()) {
+			return;
+		}
+		for(JsonElement element : root.getAsJsonArray()) {
+			if(!element.isJsonObject()) {
+				continue;
+			}
+			try {
+				handleAutoConnectEvent(minecraft, element.getAsJsonObject());
+			}catch(Throwable t) {
+				// An unreadable event must never break the client loop.
+			}
+		}
+	}
+
+	private static void handleAutoConnectEvent(Minecraft minecraft, JsonObject event) {
+		String type = string(event, "type");
+		if(type == null) {
+			return;
+		}
+		if("message".equals(type)) {
+			JsonElement data = event.get("data");
+			if(data == null || !data.isJsonPrimitive()) {
+				return;
+			}
+			JsonElement parsed;
+			try {
+				parsed = JsonParser.parseString(data.getAsString());
+			}catch(Throwable t) {
+				return;
+			}
+			if(!parsed.isJsonObject()) {
+				return;
+			}
+			// One channel per peer, so the peer id only has to route the reply.
+			handleMessage(minecraft, AUTO_PREFIX + "peer", null, parsed.getAsJsonObject());
+			return;
+		}
+		if("fallback".equals(type)) {
+			setNotice(Component.translatableWithFallback("autoconnect.notice.fallback",
+					"No player was found automatically - press Auto-Connect Code"), 200);
+			logger.info("Auto-connect: no peer found automatically, the code fallback is available");
+		}else if("connected".equals(type)) {
+			setNotice(Component.translatableWithFallback("autoconnect.notice.connected",
+					"Auto-connect linked to a player"), 200);
+			logger.info("Auto-connect: linked to a player");
+		}else if("peer-found".equals(type)) {
+			logger.info("Auto-connect: found a player on this network");
+		}else if("failed".equals(type)) {
+			String reason = string(event, "reason");
+			logger.info("Auto-connect stopped: {}", reason == null ? "unknown" : reason);
+		}
+	}
+
 	private static void handleEvent(Minecraft minecraft, JsonObject event) {
 		if(!"message".equals(string(event, "type"))) {
 			return;
@@ -275,7 +424,10 @@ public final class LANInvites {
 		if(messageElement == null || !messageElement.isJsonObject()) {
 			return;
 		}
-		JsonObject message = messageElement.getAsJsonObject();
+		handleMessage(minecraft, peerId, peerName, messageElement.getAsJsonObject());
+	}
+
+	private static void handleMessage(Minecraft minecraft, String peerId, String peerName, JsonObject message) {
 		String kind = string(message, "t");
 		if(kind == null) {
 			return;
@@ -394,11 +546,13 @@ public final class LANInvites {
 		JsonObject payload = new JsonObject();
 		payload.addProperty("v", VERSION);
 		payload.addProperty("code", offerCode);
-		String self = LANDiscovery.getSelfName();
+		String self = localName();
 		if(self != null && !self.isEmpty()) {
 			payload.addProperty("host", self);
 		}
-		boolean sent = LANDiscovery.invite(peer.id, payload.toString());
+		boolean sent = peer.id.startsWith(AUTO_PREFIX)
+				? AutoConnect.sendText(payload.toString())
+				: LANDiscovery.invite(peer.id, payload.toString());
 		setNotice(Component.translatableWithFallback(sent ? "lan.notice.sent" : "lan.notice.sendFailed",
 				sent ? "Invite sent to %s" : "Could not invite %s", peer.displayName()), 120);
 		logger.info(sent ? "Invite sent to {}" : "Could not send an invite to {}", peer.displayName());
@@ -414,6 +568,9 @@ public final class LANInvites {
 		envelope.addProperty("t", "invite-answer");
 		envelope.addProperty("v", VERSION);
 		envelope.addProperty("answer", answerCode);
+		if(peerId.startsWith(AUTO_PREFIX)) {
+			return AutoConnect.sendText(envelope.toString());
+		}
 		return LANDiscovery.sendText(peerId, envelope.toString());
 	}
 
@@ -425,9 +582,13 @@ public final class LANInvites {
 		backlog.remove(invite);
 		if(invite.peerId != null && !invite.peerId.isEmpty()) {
 			JsonObject envelope = new JsonObject();
-			envelope.addProperty("t", "invite-declined");
-			envelope.addProperty("v", VERSION);
+		envelope.addProperty("t", "invite-declined");
+		envelope.addProperty("v", VERSION);
+		if(invite.peerId != null && invite.peerId.startsWith(AUTO_PREFIX)) {
+			AutoConnect.sendText(envelope.toString());
+		}else{
 			LANDiscovery.sendText(invite.peerId, envelope.toString());
+		}
 		}
 	}
 
@@ -455,6 +616,10 @@ public final class LANInvites {
 
 	/** Debug/status snapshot of the module, exposed for the LAN screens. */
 	public static String describeService() {
+		if(AutoConnect.isInstalled()) {
+			String phase = AutoConnect.getPhase();
+			return (phase == null ? "" : phase + " - ") + AutoConnect.getStatus();
+		}
 		if(!LANDiscovery.isInstalled()) {
 			return "Automatic LAN discovery is not available on this page";
 		}
@@ -462,7 +627,16 @@ public final class LANInvites {
 	}
 
 	public static String selfName() {
-		return LANDiscovery.getSelfName();
+		return localName();
+	}
+
+	/** The name other players see, from whichever peer source is live. */
+	private static String localName() {
+		String name = LANDiscovery.getSelfName();
+		if(name == null || name.isEmpty()) {
+			name = AutoConnect.getSelfName();
+		}
+		return name;
 	}
 
 	private static void setNotice(Component message, int ticks) {

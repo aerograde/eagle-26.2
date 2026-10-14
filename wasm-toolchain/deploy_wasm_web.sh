@@ -60,6 +60,10 @@ cp "$SRC/worker-bootstrap.js" "$WEB/worker-bootstrap.js"
 # before the client Wasm compiles. Optional at runtime (parks itself when the
 # origin has no /eagler-lan/v1 service).
 cp "$SRC/lan-discovery.js" "$WEB/lan-discovery.js"
+# Serverless automatic LAN connection (the AutoConnect plan): boot-time module
+# like discovery, started by the game layer when the player opens a LAN screen.
+# Optional at runtime (parks itself when the engine has no WebRTC).
+cp "$SRC/autoconnect.js" "$WEB/autoconnect.js"
 cp "$REPO/game/src/main/resources/pack.png" "$WEB/favicon.png"
 
 # 2. wasm binary (symlink -> the freshly generated one; the client emits only classes.wasm)
@@ -91,6 +95,7 @@ BUILD_INPUTS=(
 	"$SRC/index.html"
 	"$SRC/worker-bootstrap.js"
 	"$SRC/lan-discovery.js"
+	"$SRC/autoconnect.js"
 )
 if [ "$SERVER_WORKER_AVAILABLE" = true ]; then
 	BUILD_INPUTS+=("$SERVER_GEN/server-worker.wasm")
@@ -126,7 +131,7 @@ cp "$RUNTIME_SRC" "$WEB/classes.wasm-runtime.js"
 # Every file above was just rewritten from this build's inputs; drop the sidecars
 # that still describe what used to be here.
 drop_stale_sidecars \
-	"$WEB/index.html" "$WEB/worker-bootstrap.js" "$WEB/lan-discovery.js" \
+	"$WEB/index.html" "$WEB/worker-bootstrap.js" "$WEB/lan-discovery.js" "$WEB/autoconnect.js" \
 	"$WEB/classes.wasm" "$WEB/classes.wasm-runtime.js" "$WEB/mesh-worker.wasm" \
 	"$WEB/server-worker.wasm"
 

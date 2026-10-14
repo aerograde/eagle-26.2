@@ -1,0 +1,40 @@
+[recv] [spike10] listener-ports: [58375,49392]
+listener sockets: 58375 49392 (addr 192.168.0.100)
+[send] [spike10] readback-done: 40
+[send] [spike10] fired: 40
+[send] [spike10] done: true
+[recv] [spike10] arrivals: 56
+[recv] [spike10] done: true
+
+arrivals: 56, fires: 40
+
+per-source: does one socket serve all three targets?
+  sources where the source's own stats say the same local port for the closed port and both listener sockets: 40/40
+  sources where the receiver saw the same source port on both listener sockets: 40/40
+  sources where the readback matches what the receiver saw: 40/40
+
+first rows:
+    {"i": 0, "own": [59066, 64903], "closed_used": 64903, "a_used": 64903, "b_used": 64903, "a_seen": 64903, "b_seen": 64903}
+    {"i": 1, "own": [54343, 64545], "closed_used": 54343, "a_used": 54343, "b_used": 54343, "a_seen": 54343, "b_seen": 54343}
+    {"i": 2, "own": [49189, 51440], "closed_used": 49189, "a_used": 49189, "b_used": 49189, "a_seen": 49189, "b_seen": 49189}
+    {"i": 3, "own": [53953, 55708], "closed_used": null, "a_used": 53953, "b_used": null, "a_seen": 53953, "b_seen": null}
+    {"i": 4, "own": [52619, 59726], "closed_used": null, "a_used": 52619, "b_used": null, "a_seen": 52619, "b_seen": null}
+    {"i": 5, "own": [49439, 56878], "closed_used": null, "a_used": 49439, "b_used": null, "a_seen": 49439, "b_seen": null}
+    {"i": 6, "own": [56560, 62317], "closed_used": null, "a_used": 56560, "b_used": 56560, "a_seen": 56560, "b_seen": 56560}
+    {"i": 7, "own": [54871, 62062], "closed_used": null, "a_used": 62062, "b_used": null, "a_seen": 62062, "b_seen": null}
+
+distribution of which of a source's two ports is used:
+   {'second': 13, 'first': 22, 'unknown': 5}
+VERDICT: census at a throwaway port is valid
+Starting server 1/1: python3 -m http.server 8124 --directory /Users/rohan/eagle/project
+Waiting for server on port 8124...
+Server ready on port 8124
+
+All 1 server(s) ready
+Running: /tmp/webtest-venv/bin/python tmp/autoconnect/run-spike10.py 8124 192.168.0.100
+
+
+Stopping 1 server(s)...
+Server 1 stopped
+All servers stopped
+EXIT=0

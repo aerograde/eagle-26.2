@@ -56,8 +56,15 @@ public class EaglerLANPeersScreen extends Screen {
 			this.inviteButtons[i].visible = false;
 			this.inviteButtons[i].active = false;
 		}
+		// The 6-character code of the AutoConnect plan's second tier: auto-connect
+		// needs no code, and this is where a player finds one when the two
+		// machines cannot see each other on their own.
+		this.addRenderableWidget(Button.builder(
+				Component.translatableWithFallback("autoconnect.entry", "Auto-Connect Code"),
+				button -> this.minecraft.gui.setScreen(new EaglerAutoConnectCodeScreen(this)))
+				.bounds(centerX - 152, this.height / 2 + 96, 148, 20).build());
 		this.addRenderableWidget(Button.builder(CommonComponents.GUI_BACK, button -> this.onClose())
-				.bounds(centerX - 152, this.height / 2 + 96, 304, 20).build());
+				.bounds(centerX + 4, this.height / 2 + 96, 148, 20).build());
 		this.refreshRows();
 	}
 

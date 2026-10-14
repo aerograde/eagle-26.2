@@ -1,0 +1,210 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Can a connectivity check carry bits in its priority?</title></head>
+<body>
+<pre id="out" style="font:12px monospace;white-space:pre-wrap"></pre>
+<script>
+/*
+ * Spike 11.  The engine's pulse carrier reads which socket fired and when.
+ * Both are hard: a connection owns two UDP sockets and Chrome picks one per
+ * (source, target), and getStats() serves a cached report every ~50-55 ms, so
+ * a slot grid is only accurate to about half a slot.  The Binding Request a
+ * check carries has a PRIORITY attribute, and RFC 5245 has the receiver take a
+ * peer-reflexive candidate's priority from that attribute - so if a page can
+ * choose its own local candidate's priority in the SDP it signals, one check
+ * can carry 32 bits with no timing and no socket ambiguity.
+ *
+ * This spike answers exactly that, and dumps every other field of the arriving
+ * candidate and its pair so the full set of per-arrival observables is known.
+ *
+ *   mode=recv                       listener; exposes its ports, records arrivals
+ *   mode=send&addr=&ports=&n=       N sources with chosen priorities, fired
+ */
+(function () {
+  "use strict";
+  var out = document.getElementById("out");
+  var R = { ok: false, error: null, role: null, ports: [], arrivals: [], senders: [], fires: [], reports: 0 };
+  window.__spike = R;
+  function say(k, m) {
+    var line = k + ": " + (typeof m === "string" ? m : JSON.stringify(m));
+    console.log("[spike-prio] " + line);
+    out.textContent += line + "\n";
+  }
+  var sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+  var UFRAG = "AC24aa";
+  var PWD = "AC24shared7xpadded000000";
+  function munge(sdp, priority) {
+    var s = sdp.replace(/a=ice-ufrag:[^\r\n]*/g, "a=ice-ufrag:" + UFRAG)
+      .replace(/a=ice-pwd:[^\r\n]*/g, "a=ice-pwd:" + PWD);
+    if (priority) {
+      s = s.replace(/^(a=candidate:\S+ \d+ \S+ )\d+ /gm,
+        function (m, head) { return head + priority + " "; });
+    }
+    return s;
+  }
+  function forge(localSdp) {
+    var lines = String(localSdp).split(/\r\n|\n/), kept = [];
+    for (var i = 0; i < lines.length; i++) {
+      var L = lines[i].replace(/\r$/, "");
+      if (L === "" || /^a=candidate:/.test(L)) continue;
+      if (/^a=ice-ufrag:/.test(L)) { kept.push("a=ice-ufrag:" + UFRAG); continue; }
+      if (/^a=ice-pwd:/.test(L)) { kept.push("a=ice-pwd:" + PWD); continue; }
+      if (/^a=fingerprint:/.test(L)) {
+        var fp = []; for (var j = 0; j < 32; j++) fp.push("AB");
+        kept.push("a=fingerprint:sha-256 " + fp.join(":")); continue;
+      }
+      if (/^a=setup:/.test(L)) { kept.push("a=setup:passive"); continue; }
+      kept.push(L);
+    }
+    return kept.join("\r\n") + "\r\n";
+  }
+  function shared(priority) {
+    var pc = new RTCPeerConnection({ iceServers: [] });
+    pc.createDataChannel("probe", { ordered: true });
+    return pc.createOffer().then(function (o) {
+      return pc.setLocalDescription({ type: "offer", sdp: munge(o.sdp, priority) });
+    }).then(function () {
+      return pc.setRemoteDescription({ type: "answer", sdp: forge(pc.localDescription.sdp) });
+    }).then(function () { return pc; });
+  }
+  function locals(pc) {
+    return pc.getStats().then(function (stats) {
+      var list = [];
+      stats.forEach(function (s) {
+        if (s.type === "local-candidate" && s.protocol === "udp") {
+          list.push({ id: s.id, port: s.port, priority: s.priority, address: s.address,
+            candidateType: s.candidateType, protocol: s.protocol });
+        }
+      });
+      return list;
+    }, function () { return []; });
+  }
+  function waitLocals(pc) {
+    var until = Date.now() + 4000;
+    return (function attempt() {
+      return locals(pc).then(function (list) {
+        if (list.length || Date.now() > until) return list;
+        return sleep(50).then(attempt);
+      });
+    })();
+  }
+  function fire(pc, address, port) {
+    var t = Date.now();
+    try {
+      return pc.addIceCandidate({
+        candidate: "candidate:1 1 udp 2130706431 " + address + " " + port + " typ host",
+        sdpMid: "0", sdpMLineIndex: 0
+      }).then(function () { return { ok: true, at: t }; }, function (e) { return { ok: false, at: t, err: String(e) }; });
+    } catch (e) { return Promise.resolve({ ok: false, at: t, err: String(e) }); }
+  }
+  function num(v) { return v === undefined ? null : v; }
+
+  // ----------------------------------------------------------------- listener
+  function receive() {
+    return shared(null).then(function (pc) {
+      return waitLocals(pc).then(function (list) {
+        R.ports = list.map(function (l) { return l.port; });
+        R.own = list;
+        say("listener-ports", R.ports);
+        var seen = Object.create(null);
+        var until = Date.now() + 60000;
+        return (function poll() {
+          if (Date.now() > until) return Promise.resolve();
+          return pc.getStats().then(function (stats) {
+            R.reports++;
+            var remote = {}, portOf = {}, pairOf = {};
+            stats.forEach(function (s) {
+              if (s.type === "remote-candidate") remote[s.id] = s;
+              if (s.type === "local-candidate") portOf[s.id] = s.port;
+            });
+            stats.forEach(function (s) {
+              if (s.type === "candidate-pair") pairOf[s.remoteCandidateId] = s;
+            });
+            stats.forEach(function (s) {
+              if (s.type !== "remote-candidate" || s.candidateType !== "prflx") return;
+              if (seen[s.id]) return;
+              seen[s.id] = true;
+              var pair = pairOf[s.id];
+              R.arrivals.push({
+                at: Date.now(),
+                reportTimestamp: num(s.timestamp),
+                remoteId: s.id,
+                sourcePort: num(s.port),
+                priority: num(s.priority),
+                foundation: num(s.foundation),
+                address: num(s.address),
+                protocol: num(s.protocol),
+                url: num(s.url),
+                usernameFragment: num(s.usernameFragment),
+                relatedAddress: num(s.relatedAddress),
+                relatedPort: num(s.relatedPort),
+                localPort: pair ? (portOf[pair.localCandidateId] || 0) : 0,
+                pairState: pair ? num(pair.state) : null,
+                pairPriority: pair ? num(pair.priority) : null,
+                pairNominated: pair ? num(pair.nominated) : null,
+                pairRequestsReceived: pair ? num(pair.requestsReceived) : null,
+                pairResponsesSent: pair ? num(pair.responsesSent) : null,
+                pairTimestamp: pair ? num(pair.timestamp) : null
+              });
+            });
+            return sleep(6).then(poll);
+          }, function () { return sleep(20).then(poll); });
+        })();
+      });
+    }).then(function () { say("arrivals", R.arrivals.length); });
+  }
+
+  // ------------------------------------------------------------------- sender
+  function send(address, ports, n) {
+    var N = n || 8;
+    var priorities = [];
+    for (var i = 0; i < N; i++) priorities.push((0x4AC00000 + i * 0x10001) >>> 0);
+    var pcs = [];
+    return (function batch(i) {
+      if (i >= N) return Promise.resolve();
+      var group = [];
+      for (var k = 0; k < 4 && i + k < N; k++) group.push(shared(priorities[i + k]));
+      return Promise.all(group).then(function (list) {
+        pcs = pcs.concat(list);
+        return batch(i + 4);
+      });
+    })(0).then(function () {
+      return Promise.all(pcs.map(waitLocals));
+    }).then(function (lists) {
+      lists.forEach(function (l, i) {
+        R.senders.push({ i: i, wanted: priorities[i], locals: l });
+      });
+      say("sender-locals", R.senders.map(function (s) {
+        return s.locals.map(function (l) { return l.port + ":" + l.priority; }).join("|");
+      }));
+      var chain = Promise.resolve();
+      pcs.forEach(function (pc, i) {
+        chain = chain.then(function () {
+          var target = ports[i % ports.length];
+          var rec = { i: i, wanted: priorities[i], target: target };
+          R.fires.push(rec);
+          return fire(pc, address, target).then(function (r) {
+            rec.ok = r.ok; rec.at = r.at; rec.err = r.err || null;
+          }).then(function () { return sleep(150); });
+        });
+      });
+      return chain.then(function () { say("fired", R.fires.length); return sleep(2500); });
+    });
+  }
+
+  var params = new URLSearchParams(location.search || "");
+  var mode = params.get("mode") || "recv";
+  R.role = mode;
+  var job;
+  if (mode === "send") {
+    var ports = (params.get("ports") || "").split(",").map(Number).filter(function (p) { return p > 0; });
+    job = send(params.get("addr") || "127.0.0.1", ports.length ? ports : [40000], Number(params.get("n") || 8));
+  } else {
+    job = receive();
+  }
+  job.then(function () { R.ok = true; say("done", true); },
+    function (e) { R.error = String(e && e.message ? e.message : e); say("error", R.error); });
+})();
+</script>
+</body>
+</html>

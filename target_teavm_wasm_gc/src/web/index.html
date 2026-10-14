@@ -700,6 +700,13 @@
 	     itself with no side effects when the origin has no discovery service
 	     (tools/lan-server.mjs); the manual join-code flow is unaffected. -->
 	<script type="text/javascript" src="lan-discovery.js?v=__EAGLER_BUILD_ID__"></script>
+	<!-- Serverless automatic LAN connection (the AutoConnect plan): shared ICE
+	     credentials, a port-lottery pool, a subnet sweep and a peer-port
+	     exchange, so two players on one network connect with no server and no
+	     codes. Starts when the player opens a LAN screen; after 20 seconds
+	     without a peer it offers the 6-character code fallback. Parks itself on
+	     engines without WebRTC; the manual join-code flow is unaffected. -->
+	<script type="text/javascript" src="autoconnect.js?v=__EAGLER_BUILD_ID__"></script>
 	<script type="module">
 		(async () => {
 			try {
