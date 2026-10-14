@@ -1244,3 +1244,44 @@ Two requirements therefore pull opposite ways inside one lifetime cap:
 No DataChannel, no invite/answer.  Per the directive the carrier is finished;
 this is its falsification, and the game-side path plus the LFS push are what
 remain.
+
+## 26. The client was built, packaged and smoke-checked (Oct 14)
+
+Section 18's ">= 10 GiB" was mis-stated, and section 25's report of it as a
+blocker was wrong.  `link-web-target-standalone.js` sets
+`EAGLER_LINK_HEAP_MIB=12288` with a 13312 MiB RSS cap: that is the linker JVM's
+**heap**, not disk.  Disk free was 2.8 GiB against a job that needs a few hundred
+MB, so the link ran on the existing volume and nothing had to be redirected.
+
+What actually ran, and what each step produced:
+
+    (jars already current: compiled 21:36 > newest source 21:34)
+    link-web-target-standalone.js client
+      classes.wasm        102,985,892 B  sha256 9316fb3518245c3f...  (~49 min)
+    link-web-target-standalone.js mesh      (shared game.jar made it stale)
+      mesh-worker.wasm     17,793,159 B  sha256 782b693256b88191...
+    link-server-standalone.js               (standalone linker takes client|mesh only)
+      server-worker.wasm   42,990,230 B  sha256 f6ea5fb5ac464ad2...  (~45 min)
+    build-single-html.js --reuse-client --reuse-mesh --reuse-server --fast-package
+      dist/direct-connect.html  89,832,874 B  (was 89,755,321 B)
+      grep -c enterCode dist/direct-connect.html -> 2
+
+Smoke check, real Chromium, the packaged file served by
+`tools/lan-server.mjs --dir dist` at `http://127.0.0.1:8090/direct-connect.html`:
+
+  * **no page errors at all** for the whole session - the harness listens for
+    `pageerror`; the count is 0 (tmp/artifact-verify/session.log).
+  * boot to the title screen, then a created world: the integrated server was
+    published through the browser LAN relay.
+  * the LAN screen ("Players On This Network") carries the new **Auto-Connect
+    Code** button (smoke-1-lan-screen.png).
+  * clicking it opens the six-character code screen (smoke-2-code-screen.png);
+    `AC24LA` typed into the box (smoke-3-code-typed.png) and `Connect` pressed
+    put the engine in code mode (smoke-4-code-mode.png):
+    `code mode: both peers derive the same credentials from the shared code`,
+    `peer id 5fb8 (player-5fb8) [code mode]`, state `listening`.
+
+So the shipped artifact installs the engine (`window.__eaglerAC` present, the
+real UI reaches `enterCode`) and the game-side screens are wired to it.  It does
+**not** mean the plan works: no connection has ever completed, and section 25 is
+still the evidence for why.
