@@ -39,7 +39,15 @@ import net.lax1dude.eaglercraft.v1_8.log4j.Logger;
  */
 public final class AutoConnect {
 
-	/** Version of the JS module this bridge speaks to. */
+	/**
+	 * Version of the JS module this bridge speaks to. Must match
+	 * {@code autoconnect.js}'s own VERSION, because {@link #moduleInstalled()}
+	 * gates every call on an exact match - a stale number on either side silently
+	 * switches the whole auto-connect tier off (the module loads, the LAN screen
+	 * offers the entry, and nothing ever happens). The two halves agree on 4; the
+	 * comparison below is built from this constant so the next bump cannot leave
+	 * the literal behind again.
+	 */
 	public static final int VERSION = 4;
 
 	private static final Logger logger = LogManager.getLogger("AutoConnect");
@@ -59,8 +67,13 @@ public final class AutoConnect {
 		void onEvent(String eventJson);
 	}
 
+	// The comparison is built from VERSION, not spelled out: the literal 4 that
+	// used to be here outlived the module's own bump to 8, and because this one
+	// method gates every other call, the whole auto-connect tier went quiet
+	// without a single error - the LAN screen still offered the entry and the
+	// bridge still answered, it just never started anything.
 	@JSBody(script = "var a = (typeof window !== \"undefined\") ? window.__eaglerAC : null;"
-			+ "return !!(a && a.version === 4);")
+			+ "return !!(a && a.version === " + VERSION + ");")
 	private static native boolean moduleInstalled();
 
 	@JSBody(script = "var a = (typeof window !== \"undefined\") ? window.__eaglerAC : null;"

@@ -135,6 +135,12 @@ drop_stale_sidecars \
 	"$WEB/classes.wasm" "$WEB/classes.wasm-runtime.js" "$WEB/mesh-worker.wasm" \
 	"$WEB/server-worker.wasm"
 
+# A single-file client left here by an older deploy is the same trap as a stale
+# sidecar, only bigger: it inlines a PREVIOUS wasm, so anyone who serves this
+# directory gets a client that predates every fix since. The packaged artifact
+# belongs to dist/ (and to the release), never to the deployed multi-file build.
+rm -f "$WEB/direct-connect.html"
+
 # 4. Base EPKs (symlink -> the JS build's; same assets). Music is distributed
 #    separately as an optional resource pack and must not delay normal startup.
 rm -f "$WEB/music.epk" "$WEB/music.epk.br" "$WEB/music.epk.gz"

@@ -542,9 +542,24 @@
               flushCandidates();
             })
             .catch(function (err) {
+              // A link that is already up - or whose signalling state is back
+              // to "stable" - has an answer applied, and Chrome rejects a
+              // second one with "Called in wrong state: stable". That is a late
+              // duplicate (the peer rebuilt its link), not a failure, so it must
+              // not read as one in the log or re-arm the answer for another
+              // doomed attempt. Measured on the packaged client: two pages
+              // meeting at boot logged `answer handling failed: ... Called in
+              // wrong state: stable` while the link itself was fine.
+              if (pc.connectionState === "connected"
+                  || (link.channel && link.channel.readyState === "open")
+                  || pc.signalingState === "stable") {
+                link.answerApplied = true;
+                log("info", "ignored a duplicate answer for " + record.id.slice(0, 8)
+                    + " (the link is already up)");
+                return;
+              }
               link.answerApplied = false;
               log("error", "answer handling failed: " + (err && err.message));
-              if (pc.connectionState === "connected") return;
               retryLink(record, "answer failed");
             });
         });

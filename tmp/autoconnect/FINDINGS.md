@@ -1285,3 +1285,337 @@ So the shipped artifact installs the engine (`window.__eaglerAC` present, the
 real UI reaches `enterCode`) and the game-side screens are wired to it.  It does
 **not** mean the plan works: no connection has ever completed, and section 25 is
 still the evidence for why.
+
+## 27. Pre-added candidate pairs: the counter is fast, the lattice is not (Oct 14)
+
+A proposal to cut the exchange from minutes to seconds: pre-add the candidate
+pairs so no `prflx` creation is needed, read the receiver's **cumulative**
+`requestsReceived` total at each slot boundary instead of counting new
+peer-reflexive pairs, and run 64 slots of 0-15 pulses at 100 ms (6.4 s) or even
+50 ms (3.2 s), with a port-encoding fallback if the delay is over 100 ms.
+
+Harness: [spike-preadd.html](spike-preadd.html) +
+[run-spike-preadd.py](run-spike-preadd.py), four runs, Chrome for Testing 148
+headless, **one page holding both roles** (so every timestamp is one clock; the
+checks still cross the real interface, `192.168.0.100`).  Raw:
+[preadd-run1.json](preadd-run1.json) … [preadd-run4.json](preadd-run4.json).
+Six measurements: E0 the report floor, E1 the proposal's own test verbatim, E2
+the real pre-added pulse, E3 idle noise, E4 repeats, E5 the 100 ms protocol.
+
+### E0 - the observation floor is ~53 ms, and pre-adding cannot touch it
+
+412-430 polls in 2.5 s (165-172/s), of which **365-382 returned a cached
+report**; 47-48 distinct reports per 2.5 s (per run: 430/382/48, 424/376/48,
+412/365/47, 416/369/47).  Gap between distinct report timestamps: min 50,
+median 52-54, p90 54-55, E0 max 56-57 - and 104 once, measured over a whole
+run rather than this window.  Poll cost median 0 ms, p90 1 ms.  No decoder can
+date an arrival more finely than this, whatever the pairs.
+
+### E1 - the proposal's own test does not test what it says
+
+The pulse comes from a *fresh* connection whose port was never pre-added, so its
+increment cannot land on the pre-added pair - and in all four runs it did not: a
+new remote candidate appeared 7 / 31 / 50 / 55 ms after the fire, on the pulse
+connection's own port.  The pre-add itself caused 3-5 increments on the pair for
+the *sender* connection's port, the first at **+5 and +6 ms** (runs 3, 4) and
+**+60 and +61 ms** (runs 1, 2) after the receiver added the candidate, then at
++166/167 ms and +911-1297 ms.  So the one-shot check a pre-add provokes really is
+fast - it is everything after it that is not.
+
+### E2-E4 - a pre-added pair answers once, then only at the consent rate
+
+* After the initial exchange the pair is already hot, so the explicit fire there
+  produced an increment 535 ms (run 1) and 744 ms (run 3) later - i.e. the
+  consent tick - and in runs 2 and 4 **nothing landed on the pre-added pair at
+  all** (0 of 4 moves in the window, a new `prflx` candidate appeared instead).
+* Idle, a settled pair increments **1-2 times per 3 s (0.33-0.67/s)** with
+  nothing firing (E3, runs 1-4, always that same pair).
+* Repeats are idempotent: **6 fires 250 ms apart -> 1 increment**, and **4 fires
+  in one tick -> 0 increments**, in every run.  A known candidate re-added to a
+  known connection is not a new check.
+
+So a pre-added pair yields exactly one fast inbound check (5-61 ms, caused by the
+peer's triggered response) and thereafter only ~0.5/s.  It is a pinhole, not a
+carrier: it cannot be re-pulsed, which is why the plan's "0-15 pulses per slot
+from a pool" cannot be served by a small pool of pre-added connections.
+
+### E5 - the counter is fast; the lattice and the supply are the walls
+
+53 fresh connections, one pulse each, symbols `[1,15,3,7,0,15,8,4]` at 100 ms:
+
+* every pulse produced an increment (53/53), and **52-53 of 53 arrived with the
+  pair's *first* sighting** - the pair appears in the report already carrying
+  `requestsReceived: 1`;
+* fire -> first increment: min **9**, median **32-40**, p90 **55**, max 56 ms;
+  44/53 and 47/53 of the pulses are visible in under 50 ms;
+* but one pulse is not one increment: 53 pulses produced **184** counted
+  increments (53-62 first-sighting + 122-131 later ones) over ~9-150 ms, i.e.
+  ~3.5 per pulse;
+* **100 ms decode fails: 4-6 of 8 symbols wrong in every run and on both grids**
+  (aligned to the sender's clock and at an arbitrary 37 ms offset).  Run 4, raw
+  per-slot totals vs sent: `[2,31,21,17,7,24,37,16]` for `[1,15,3,7,0,15,8,4]` -
+  roughly 2k in the slot plus the previous slot's tail, so the level does not map
+  to the symbol;
+* the cumulative-total read itself loses nothing: with first-sighting events
+  recorded, the decoded raw totals equal the window's recorded increments
+  exactly - run 3 `[2,31,21,17,7,21,40,16]` and run 4 `[2,31,21,17,7,24,37,16]`,
+  both grids.  In runs 1-2, before that fix, they did **not** agree (run 1 raw
+  `[1,17,36,17,7,30,31,16]` against a recorded `[0,2,33,10,7,15,23,12]`), and the
+  gap is exactly the first-sighting increments counted in one and not the other.
+
+**Measurement note, because an earlier pass of this same probe got it wrong:** a
+pair that first appears *already incremented* moves the sum without producing a
+"counter changed" event.  Recording only changes gave fire -> increment =
+68-144 ms (median 92-96) in runs 1-2; recording first sightings as well gives
+9-56 ms (median 32-40).  The 50-100 ms "pair creation delay" of §11/§25 was
+partly that artifact.
+
+### Verdict
+
+* **Pre-adding does not make the counter tick faster.** The fast path is a fresh
+  connection's first check (median 32-40 ms).  A pre-added pair is slower to move
+  (it was already answered) and cannot be re-pulsed (E4).
+* **50 ms slots are impossible** - the report lattice alone is 50-57 ms - and the
+  proposal's own table, applied to the measured latency (median 32-40, p90 55),
+  lands on **100-200 ms slots**, i.e. no speedup over the 200 ms the grid
+  harness already uses.
+* **The supply is the hard wall.** One fresh connection per pulse (repeats are
+  idempotent), so 64 slots x 0-15 pulses is up to 960 connections against the
+  measured **500 lifetime cap**; 4 bits/slot averages 480 (3 bits/slot, 299,
+  needs 85 slots).  This is the same collision §25 measured, not a latency one.
+* **The port-encoding fallback is not viable as written**: which of a
+  connection's two sockets carries the check was 25/28, 28/25, 25/28, 25/28
+  across the four runs - the coin flip of §11(a), so the sender cannot choose a
+  port to encode with.
+* **What is worth keeping** is the read itself: summing `requestsReceived`
+  across *all* pairs at each boundary is exact with respect to every arrival the
+  receiver recorded, whereas per-pair `prflx` counting captured 56 of 310 pulses
+  in §25.  That read has not yet been tried inside the grid harness.
+
+---
+
+## 28. Playtest pass: the socket channel in the engine, and the version trap (2026-10-15)
+
+### What the socket channel does in the engine, measured
+
+`tmp/autoconnect/run-peers-code.py` (two real pages, one shared 6-character code,
+the engine started by `enterCode`) across five runs:
+
+| run | outcome |
+| --- | --- |
+| sym-run1 | both peers decoded (`linking` on both) - the only clean run |
+| sym-run2 | neither side finished `prepare()` |
+| sym-run3 | `error: watch loop: amFirst is not defined` - the exchange never fired |
+| sym-run4 | one census, no probe answer, reader polls timing out at 4 s for 240 s |
+| sym-run5 | both located the peer, then **no log line for the rest of the run** |
+| sym-run6 | census at +3.9 s, 18 own/12 peer sockets, 3 bits/pulse, 107 pulses in 9.4 s, no decode |
+
+Three defects, all reproducible, all fixed here:
+
+1. **A merged source line commented out `var amFirst`.** `maybeExchange()` threw
+   before it ever reached the transmitter, and the only trace was one
+   `watch loop:` line in the log.
+2. **Reader polls starved the passes they were waiting behind.** A reader poll
+   *and* the census *and* the peer-socket probe are all `getStats()` reads. The
+   reader loops ran from boot at a 250 ms cycle, and while `prepare()` was
+   reading sockets, ~19 readers each hammering `getStats()` held every census and
+   probe read past its 4 s timeout - sym-run3/4 show 4 s timeouts repeating for
+   minutes with no census line at all. The reader loops now idle while
+   `preparing` is set (there is nothing to read before the peer pulses).
+3. **One hung `getStats()` parked the page's only stats slot for good.**
+   `pumpStats()` runs one job at a time (`STATS_MAX_IN_FLIGHT = 1`), which is why
+   reads are normally cheap; a promise that never settles therefore wedges the
+   queue permanently. sym-run5 is exactly that shape: both peers found each
+   other, then neither logged anything again, ever. Reads now go through an 8 s
+   watchdog that reports "nothing measured", which is what a timed-out read
+   measured anyway.
+
+After the three fixes, the channel reaches `socket channel ready: 18 own
+socket(s), 12 peer socket(s), 3 bit(s) per pulse` and fires a full 107-pulse
+burst in 9.4 s (previously it never got that far). It still does not decode:
+alice's `peer socket probe` never answers inside the run, and a receiver needs
+its own `SYM.cols` before it can read the peer's pulses at all - so one side
+stalling costs both. That is the supply/latency wall of section 27, now with a
+concrete first casualty: **the alphabet probe (512 checks over 24 scanners, read
+back through a single-slot stats queue) is the expensive step, not the pulses.**
+
+### The version trap: auto-connect was dead in the shipped client
+
+`autoconnect.js` declared `var VERSION = 8`. `AutoConnect.moduleInstalled()`
+compared against a **literal 4 compiled into its `@JSBody` script** - not against
+the Java constant of the same name. That one method gates every other call in
+the bridge, so in the shipped client:
+
+* `AutoConnect.isInstalled()` was false at every one of its call sites in
+  `LANInvites`, including `ensureAutoConnectStarted()`;
+* the LAN screen still offered the Auto-connect entry and still opened the code
+  screen (neither is gated), so nothing looked broken;
+* `AutoConnect.start()` returned before doing anything, so the engine was never
+  started, `presentAutoConnectPrompt()` never fired, and the status line stayed
+  at its initial text.
+
+No error, no exception - the feature was simply inert. The only trace was the
+boot line `AutoConnect: module not loaded on this page (manual join codes only)`.
+
+Fixed by agreeing on 4 - the number the already-linked wasm expects - and
+building the bridge's comparison from its own constant:
+
+```java
+@JSBody(script = "var a = ... ;" + "return !!(a && a.version === " + VERSION + ");")
+```
+
+Verified on the real client (a throwaway Playwright probe, deleted after the pass,
+serving `build/web` on `:8091`): the boot line is now `[AutoConnect]: phase 0 - connection pool - idle`,
+i.e. the Java half sees the module. Changing the Java half needs a client
+relink, so this wanted `node wasm-toolchain/link-web-target-standalone.js client`
+before the artifact could be repackaged.
+
+### Still open
+
+* The alphabet probe is the socket channel's cost centre; a receiver that has not
+  finished it cannot read anyone's pulses, so both sides stall together.
+* A closed tab leaves its presence on the discovery server long enough for the
+  next client to see a ghost peer and log `rebuilding the link to <id> (timed
+  out)`; the retry policy bounds it, but the peer is dead.
+* Driving the LAN screens by coordinate on the multi-file build needs
+  coordinates that differ from the packaged client's; the screen path itself was
+  verified only up to the boot gate.
+
+## 29. The relink landed, and the ghost peers were a server bug, not a TTL
+
+### The shipped client had the fixed bridge after all
+
+`node wasm-toolchain/link-web-target-standalone.js client` finished at 07:31
+(3482 s, 11.7 GiB peak) and installed a 102,985,902-byte `classes.wasm`
+(sha256 `a7a2f2c1…`). Deployed into `build/web` and driven on `:8091`
+(`tmp/playtest/autoconnect-gate.py`, 48.8 s to the title screen): the page's own
+module reports `version 4`, and the game's logger writes
+
+    [AutoConnect]: phase 0 - connection pool - idle
+
+instead of `module not loaded on this page`. So the Java half sees the module in
+the relinked build, with no page errors.
+
+### Ghost peers: `sweepExpired()` never expired anything
+
+The "obvious" story - a closed tab lingers until its 30 s TTL - is wrong. The
+discovery server sweeps every 5 s and calls
+`if (now - peer.seen > peer.ttlMs)`; peers were created as
+`{ id, name, room, scope, addr, seen, mailbox, cursor }` **without `ttlMs`**, so
+the comparison was against `undefined` and every peer ever registered stayed on
+the roster forever. Measured on the shipped server:
+
+* `/health` reported 6 peers while two pages were live; one entry had
+  `ageMs: 41456683` - eleven and a half hours old;
+* a single `POST /presence` with no follow-up heartbeat was still listed 45 s
+  later (TTL is 30 s);
+* the real client behaves exactly as the roster says: alice's boot logged
+  `Automatic LAN discovery: 0 connected, 4 found on this network (loopback)`,
+  and both pages then churned `rebuilding the link to <ghost> (timed out)` /
+  `giving up on <ghost> for now`, spending real WebRTC budget on players who had
+  closed hours earlier.
+
+Fixed by putting the TTL on the record:
+
+```js
+peer = { id, name, …, seen: 0, ttlMs: Math.max(opts.ttlMs, 10000), … };
+```
+
+Verified on a fresh instance (`:8099`, same code): a silent `POST /presence`
+went 1 → 0 peers after 42 s, while a peer re-posting every 10 s stayed at 1 for
+the whole 30 s+ window. On the restarted `:8091` server the roster holds only the
+pages that are actually open, and the playtest clients found **each other**
+(`peer 4c7c415d connected`, `peer c948b11a connected`) instead of ghosts.
+
+### The deployed directory was serving a stale client
+
+`target_teavm_wasm_gc/build/web/direct-connect.html` (89.6 MB, Oct 3) predated
+the AutoConnect module entirely - it contains no `window.__eaglerAC` at all, and
+`lan-server.mjs` prefers `/direct-connect.html` when the directory has one. So
+serving the build directory handed out a client from before the feature. The
+deploy script now deletes it, for the same reason it already deletes stale
+`.br` sidecars; the packaged artifact lives in `dist/`.
+
+### Still open
+
+* The alphabet probe is the socket channel's cost centre; a receiver that has not
+  finished it cannot read anyone's pulses, so both sides stall together.
+* Nothing in the UI tells a player who only wants to *join* how to become
+  discoverable: `AutoConnect.start()` runs on the Direct Connect room, the
+  nearby-players screen and the code screen, and all three sit behind hosting a
+  world first. Two players who each open their own room do find each other; a
+  guest who never opens a world cannot be found at all.
+* The in-world walk of the packaged artifact (world → Open to LAN → room →
+  nearby players) was invalidated twice by CPU load from concurrent relinks: the
+  integrated server worker never booted inside the wait, so the taps that follow
+  landed on a loading screen. It needs a quiet machine, not a code change.
+
+## 30. The packaged artifact carries the fix (and one misleading log line is gone)
+
+Packaged with `node wasm-toolchain/build-single-html.js --skip-build --fast-package
+--output dist/direct-connect.html`: `dist/direct-connect.html`, 89,836,981 bytes, sha256 `eebe85cf88f7f5ac`, built from the `build/web` tree that holds the
+client relinked at 07:31 today.
+
+`--skip-build` is the script's documented "assemble nothing, package what is in
+`build/web`" mode, and the three payloads in that tree are:
+
+| payload | linked | note |
+| --- | --- | --- |
+| `classes.wasm` | 2026-10-15 07:31 | carries the AutoConnect bridge fix |
+| `mesh-worker.wasm` | 2026-10-15 18:26 | relinked for the freshness gate |
+| `server-worker.wasm` | 2026-10-14 07:10 | see below |
+
+The server image could not be relinked here: it swallowed 1.1 GB of a disk that
+had ~1.4 GB free and the machine reached 99% full, so the run was stopped rather
+than fill the volume. That is acceptable for *this* change because the server
+image does not contain the code at all - grep of the three payloads:
+
+    classes.wasm        AutoConnect=4  LANInvites=3  EaglerAutoConnectCodeScreen=1
+    mesh-worker.wasm    AutoConnect=0
+    server-worker.wasm  AutoConnect=0  LANInvites=0  EaglerAutoConnectCodeScreen=0
+
+so the only input that changed since 2026-10-14 (`platform-teavm/AutoConnect.java`,
+a client-side WebRTC bridge) is unreachable from `ServerMainClass`, and a relink
+would reproduce the same bytes. The mtime gate in `--reuse-server` cannot express
+"unreachable", which is exactly why the packaged path used `--skip-build`.
+
+Verified on the packaged file, served by the real discovery server
+(`node tools/lan-server.mjs --dir dist`, `:8092`), fetched in a fresh headless
+Chromium:
+
+    menuReady: True after 26.3s
+    module: {"version": 4, "state": "idle", "phase": "phase 0 - connection pool"}
+    gate lines: ["[AutoConnect]: phase 0 - connection pool - idle"]
+    page errors: []
+
+i.e. the single file a player downloads now has a live auto-connect tier, where
+the Oct 14 artifact had `module not loaded on this page`.
+
+### A duplicate answer is no longer reported as a failure
+
+Two pages meeting at boot produced
+
+    LAN: error: answer handling failed: Failed to execute 'setRemoteDescription':
+    ... Called in wrong state: stable
+
+while the link itself was healthy. Chrome rejects a second answer once the
+signalling state is `stable`, so this is a late duplicate (the peer rebuilt its
+link) and the handler already returned quietly when the connection was up - but
+it logged `error` and cleared `answerApplied`, arming another attempt that cannot
+succeed. The catch now treats connected/open/`stable` as the duplicate it is,
+logs `ignored a duplicate answer for <peer> (the link is already up)`, and leaves
+`answerApplied` set. The link state machine is otherwise unchanged.
+
+### What a player would still hit
+
+* A ghost peer is gone from the roster in about a TTL, not forever, but the
+  client still spends one WebRTC link on a peer that closes mid-session.
+* Nothing in the UI tells a player who only wants to *join* how to become
+  discoverable: `AutoConnect.start()` runs on the Direct Connect room, the
+  nearby-players screen and the code screen, and all three sit behind hosting a
+  world first.
+* The in-world walk of the packaged artifact was interrupted twice by this
+  machine (a concurrent relink, then a disk at 99% and the run's tool cleanup),
+  so the room -> nearby-players -> invite path on the *new* payload is verified
+  by the boot gate and by the same flow on the multi-file build, not by a
+  completed end-to-end pass on the single file.

@@ -96,12 +96,16 @@
 (function () {
   "use strict";
 
-  // Bumped to 8 for the pass that fixed the two defects measured in
-  // grid-run10.log: the shared `s.__acId` counter (four pulses per round instead
-  // of ~120) and the 20 ms stats poll cycle (~300 getStats passes a second, one
-  // of which took 43817 ms).  A page that already installed version 7 must
-  // re-install, so the gate has to move.
-  var VERSION = 8;
+  // The revision the game-side bridge checks before it will speak to this
+  // module: platform-teavm's AutoConnect.moduleInstalled() compares
+  // window.__eaglerAC.version against its own VERSION and gates every other
+  // call on the result.  The two drifted - this module said 8, the bridge still
+  // said 4 - and because that one check gates everything, auto-connect went
+  // silently dead: the module loaded, the LAN screen offered the entry, and
+  // nothing was ever started.  Both halves now say 4, and the bridge builds its
+  // comparison from its own constant so a future bump cannot leave a literal
+  // behind again.  Keep the numbers equal when either side changes.
+  var VERSION = 4;
   if (window.__eaglerAC && window.__eaglerAC.version === VERSION) {
     return; // already installed
   }
@@ -326,6 +330,13 @@
   var peerTargets = [];                 // peer sockets to aim at (probe readback)
   var exchange = { active: false, done: false, startedAt: 0, gen: 0 };
   var ready = false;
+  // True while the census and the peer-socket probe are reading this page's
+  // sockets.  Those passes are made of getStats() reads, and so is every reader
+  // poll; a live reader poll is not merely wasted work before there is anything
+  // to read (the peer has not pulsed yet), it is what held every census and
+  // probe read past its timeout in sym-run3/4.txt.  The reader loops idle while
+  // this is set.
+  var preparing = false;
   var lastArrivalAt = 0;
   var lastDecodeAt = 0;
   var peers = Object.create(null);
@@ -560,7 +571,9 @@
   }
 
   function pcStats(pc, high) {
-    return withStats(function () { return pc.getStats(); }, high);
+    return withStats(function () {
+      return withTimeout(pc.getStats(), STATS_JOB_TIMEOUT_MS);
+    }, high).then(function (stats) { return stats || EMPTY_STATS; });
   }
 
   function udpPorts(pc) {
@@ -651,6 +664,16 @@
       return rows;
     }, function () { return []; });
   }
+
+  // A stats read that never settles must not hold the only slot in the queue:
+  // the queue is what makes every read cheap (STATS_MAX_IN_FLIGHT below), but a
+  // hung getStats() promise then parks it for the rest of the page's life - no
+  // later read, census or arrival, ever runs again.  sym-run5.txt is that shape:
+  // both pages found each other, then the census read was queued behind a read
+  // that never came back and neither side ever logged a socket count.  A timed
+  // out read reports nothing, which is what it measured anyway.
+  var STATS_JOB_TIMEOUT_MS = 8000;
+  var EMPTY_STATS = { forEach: function () {} };
 
   function withTimeout(promise, ms) {
     return new Promise(function (resolve) {
@@ -1199,6 +1222,13 @@
   function readerLoop(reader) {
     function step() {
       if (!running || state === "connected") return Promise.resolve();
+      // Idle through the census and the probe: there is nothing to collect yet,
+      // and each poll is a getStats() pass the census and the probe are waiting
+      // behind.  The peer cannot be pulsing either - it is running the same
+      // pass - and a pulse that arrives a moment early is re-read on the next
+      // tick, because the pulse connection lives SYM_CLOSE_AFTER_MS and the
+      // decode only runs once the arrivals settle.
+      if (preparing) return sleep(POLL_CYCLE_MS).then(step);
       return pollReader(reader).then(function () {
         return sleep(POLL_CYCLE_MS).then(step);
       });
@@ -1305,6 +1335,147 @@
       return s;
     }
     return null;
+  }
+
+  // ------------------------------------------------------- the socket channel
+  // Measured in spike-sockets.html (four runs, 60/60 pulses each): a pulse aimed
+  // at one of the peer's sockets lands on that socket, and the receiver reads
+  // *which* of its own sockets it landed on from candidate-pair.localCandidateId
+  // (the local half of the pair, which pollReader already records as `port`).
+  // So the symbol is the destination socket - not the source port the old grid
+  // read, which is the sender's coin flip (FINDINGS section 11a: 55/39 and
+  // 89/85) and corrupted half of every payload.
+  //
+  // The read is by construction, not by timing: no clock, no slot boundary, no
+  // cluster.  One pulse, one symbol.  The price is that every pulse needs a
+  // fresh connection (E4 in section 27: re-adding a known candidate to a known
+  // connection is a no-op), so the payload's cost is connections, and the
+  // columns per pulse are chosen to fit the 500-connection lifetime cap.
+  var SYM = { t0: 0, cols: [], perPulse: 0, pulses: [], seen: {}, settled: 0 };
+  // The socket channel is the carrier unless a run is explicitly asked for the
+  // legacy grid (window.__eaglerAC.start({ socket: false })).
+  var useSocketChannel = true;
+  var SYM_SETTLE_MS = 250;      // a pulse is read this long after the last one
+  var SYM_PULSE_GAP_MS = 80;    // ICE pacing: one pulse per tick
+  // A pulse connection only has to live until the peer's reader has sampled its
+  // arrival (measured median 37 ms, p90 61 ms, against a ~53 ms report lattice).
+  // Leaving all 80 open slowed the peer's reader polls to 4 s and starved the
+  // probe's own stats reads (sym-run1/2.txt): a reader is a live participant, so
+  // every open pulse connection is a pair it must answer.  A 700 ms lifetime at
+  // an 80 ms gap keeps ~9 in flight instead of ~55.
+  var SYM_CLOSE_AFTER_MS = 700;
+
+  // Bits per pulse = floor(log2(columns)), so the symbol always indexes a real
+  // column and the alphabet is a power of two (a symbol outside it would aim at
+  // an undefined port).  Six sockets -> 2 bits, ten -> 3, sixteen -> 4.
+  function symPerPulse(K) {
+    if (K < 2) return 0;
+    var b = 0, v = 1;
+    while (v * 2 <= K) { v *= 2; b++; }
+    return b;
+  }
+
+  function transmitSocket() {
+    var gen = ++exchange.gen;
+    var payload = buildPayload();
+    var cols = SYM.cols.slice();
+    var perPulse = symPerPulse(cols.length);
+    if (!perPulse) {
+      log("grid", "no peer socket to aim at (" + cols.length + " column(s))");
+      return Promise.resolve(false);
+    }
+    var n = Math.ceil(payload.bits.length / perPulse);
+    SYM.t0 = now();
+    SYM.cols = cols;
+    SYM.perPulse = perPulse;
+    SYM.pulses = [];
+    SYM.seen = Object.create(null);
+    log("sym", "transmitting " + payload.bits.length + " bits as " + n + " pulse(s) x "
+      + perPulse + " bit(s) over " + cols.length + " peer socket(s)");
+    var i = 0;
+    function tick() {
+      if (i >= n || !running || state === "connected" || gen !== exchange.gen) {
+        log("sym", "transmission done: " + SYM.pulses.length + " pulse(s) in "
+          + (now() - SYM.t0) + " ms");
+        return Promise.resolve(SYM.pulses.length);
+      }
+      // One pulse per tick: arrivals are read back in time order, so two pulses
+      // in flight at once could swap order and corrupt two symbols at once.
+      var idx = i * perPulse;
+      var sym = 0;
+      for (var b = 0; b < perPulse; b++) sym = (sym << 1) | (payload.bits[idx + b] ? 1 : 0);
+      var target = cols[sym];
+      var rec = { i: i, sym: sym, target: target, at: 0, pc: null };
+      i++;
+      return makeSharedPc().then(function (pc) {
+        rec.pc = pc;
+        rec.at = now();
+        SYM.pulses.push(rec);
+        return fire(pc, peerAddress, target);
+      }).then(function () {
+        window.setTimeout(function () { closePc(rec.pc); }, SYM_CLOSE_AFTER_MS);
+        // Close the previous pulse before opening the next one: measured in
+        // sym-run1/2.txt, ~55 open pulse connections made every stats pass - the
+        // reader polls *and* the probe's own socket readback - take 2-4 s.
+        return sleep(SYM_PULSE_GAP_MS);
+      }).then(tick);
+    }
+    return tick();
+  }
+
+  // The first arrival for each pulse, keyed by the column it landed on and
+  // deduplicated by the source port that carried it (a pulse connection owns two
+  // ports, and only one of them carries the check).
+  function collectSocketArrivals() {
+    var out = [];
+    for (var i = 0; i < arrivals.length; i++) {
+      var a = arrivals[i];
+      if (a.at < SYM.t0) continue;
+      var key = a.port + "/" + a.source;
+      if (SYM.seen[key]) continue;
+      SYM.seen[key] = true;
+      out.push(a);
+    }
+    return out;
+  }
+
+  function tryDecodeSocket() {
+    if (!SYM.cols.length || !SYM.pulses.length) return null;
+    if (now() - lastArrivalAt < SYM_SETTLE_MS) return null;
+    // One arrival per pulse, in time order: the earliest unclaimed arrival at or
+    // after each pulse's fire time.  A pulse whose arrival has not been sampled
+    // yet contributes nothing and the read is simply tried again on the next
+    // tick - the settle window above is what keeps that from cutting a pulse off.
+    var seen = collectSocketArrivals().sort(function (a, b) { return a.at - b.at; });
+    var bits = [];
+    var claimed = Object.create(null);
+    var read = 0;
+    SYM.settled = seen.length;
+    for (var i = 0; i < SYM.pulses.length; i++) {
+      var p = SYM.pulses[i];
+      var col = -1;
+      for (var j = 0; j < seen.length; j++) {
+        var a = seen[j];
+        if (claimed[j]) continue;
+        if (a.at < p.at) continue;
+        claimed[j] = true;
+        col = SYM.cols.indexOf(a.port);
+        break;
+      }
+      if (col < 0) {
+        // No arrival attributed: fill zeros, which the CRC will reject.
+        for (var z = 0; z < SYM.perPulse; z++) bits.push(0);
+        continue;
+      }
+      read++;
+      for (var b = SYM.perPulse - 1; b >= 0; b--) bits.push((col >> b) & 1);
+    }
+    if (read && read !== SYM.pulses.length) {
+      logThrottled("sym", "read " + read + " of " + SYM.pulses.length + " pulse(s) so far");
+    }
+    var parsed = parsePayload(bits);
+    if (parsed) log("sym", "payload decoded from " + SYM.pulses.length + " socket pulse(s)");
+    return parsed;
   }
 
   function transmit() {
@@ -1650,25 +1821,42 @@
   function maybeExchange() {
     if (exchange.active || !ready || !running || state === "connected" || state === "failed") return;
     if (!peerAddress || !peerTargets.length || readers.length < 2) return;
-    if (now() - lastArrivalAt < QUIET_MS) return;   // the peer's probe is still arriving
+    var socketReady = useSocketChannel && SYM.cols.length >= 2;
+    if (!socketReady && now() - lastArrivalAt < QUIET_MS) return;  // legacy carrier: the peer's probe is still arriving
     exchange.active = true;
     exchange.startedAt = now();
     attempt++;
     log("grid", "window quiet - exchange attempt " + attempt + " of " + MAX_ATTEMPTS
       + " (" + gridSockets().length + " socket(s) of ours, " + peerTargets.length + " of the peer's)");
+    // The socket channel fires its pulses from connections made on demand, so
+    // the 128-source pool the old grid needed is not just unnecessary - it is
+    // what made every getStats() slow (section 22: a reader's poll took 4-8 s
+    // with ~230 live connections and 0 ms with ~135).  Only build the pool when
+    // there is no socket alphabet to use.
     var havePool = false;
     for (var bi = 0; bi < pulsePool.length; bi++) if (pulsePool[bi].length) havePool = true;
-    var labelled = havePool ? Promise.resolve(1) : censusSources();
+    var labelled = (havePool || SYM.cols.length >= 2) ? Promise.resolve(1) : censusSources();
     var grid = gridSockets();
     var ownMin = grid.length ? grid[0].port : 0;      // gridSockets() is sorted
     var peerMin = peerTargets.length ? peerTargets[0] : 0;  // probe result is sorted
     var amFirst = !peerMin || (ownMin && ownMin < peerMin);
-    if (!amFirst) log("grid", "holding back " + Math.round(STAGGER_MS / 1000)
-      + "s so the peer's transmission has the page to itself (own " + ownMin
-      + " vs peer " + peerMin + ")");
+    // The stagger and the quiet window exist for the legacy carrier, whose slots
+    // need the page to itself.  The socket channel reads by construction, so it
+    // needs neither: both peers may pulse at once, because a receiver only ever
+    // sees the peer's pulses on its own readers (sym-run1.txt: waiting for quiet
+    // meant neither side ever transmitted).
+    var stagger = (useSocketChannel && SYM.cols.length >= 2)
+      ? Promise.resolve(true)
+      : (amFirst ? Promise.resolve(true) : sleep(STAGGER_MS));
+    if (!amFirst && !(useSocketChannel && SYM.cols.length >= 2)) {
+      log("grid", "holding back " + Math.round(STAGGER_MS / 1000)
+        + "s so the peer's transmission has the page to itself (own " + ownMin
+        + " vs peer " + peerMin + ")");
+    }
     labelled.then(function () {
-      return amFirst ? Promise.resolve(true) : sleep(STAGGER_MS);
-    }).then(transmit).then(function () {
+
+      return stagger;
+    }).then(transmitSocket).then(function () {
       return waitForPayload(EXCHANGE_BUDGET_MS);
     }).then(function (parsed) {
       if (parsed) return beginHandshake(parsed);
@@ -1692,7 +1880,10 @@
     var deadline = now() + budgetMs;
     return (function poll() {
       if (!running || state === "connected" || exchange.done) return Promise.resolve(null);
-      var parsed = tryDecode();
+      // The socket channel first: it is the one that reads by construction.  The
+      // old grid decoder stays as a fallback so a peer still running the old
+      // build can be read.
+      var parsed = tryDecodeSocket() || tryDecode();
       if (parsed) return Promise.resolve(parsed);
       if (now() > deadline) return Promise.resolve(null);
       return sleep(150).then(poll);
@@ -1788,19 +1979,44 @@
   }
 
   function prepare() {
+    preparing = true;
     return censusColumns().then(function () {
       return probePeerPorts(peerAddress);
     }).then(function () {
+      // The socket channel's alphabet: the peer's sockets, sorted (probePeerPorts
+      // sorts), which is the same list the peer derives from gridSockets().
+      SYM.cols = peerTargets.slice();
       if (peerTargets.length < 2) log("ports", "only " + peerTargets.length
-        + " peer socket(s); the grid will need many rounds");
+        + " peer socket(s); the socket channel needs at least two");
       releaseProbes();
-      return censusSources();
-    }).then(function () {
-      trimPool();
-      ready = true;
-      log("census", "ready: " + gridSockets().length + " own socket(s), "
-        + peerTargets.length + " peer socket(s), " + sources.length + " source(s) live");
-      return null;
+      if (useSocketChannel && SYM.cols.length >= 2) {
+        // Socket channel: the pulse connections are made on demand, so the page
+        // keeps only its readers.  That is what makes the read cheap - the pool
+        // is what the old grid needed to pay for its pulses.
+        log("census", "socket channel ready: " + gridSockets().length + " own socket(s), "
+          + SYM.cols.length + " peer socket(s), " + symPerPulse(SYM.cols.length)
+          + " bit(s) per pulse; no source pool (" + sources.length + " connection(s) released)");
+        sources.forEach(closePc);
+        sources = [];
+        pulsePool = [];
+        exchangeRounds = Math.ceil(PAYLOAD_BITS / symPerPulse(SYM.cols.length));
+        exchangeCopies = 1;
+        ready = true;
+        return null;
+      }
+      return censusSources().then(function () {
+        trimPool();
+        ready = true;
+        log("census", "ready: " + gridSockets().length + " own socket(s), "
+          + peerTargets.length + " peer socket(s), " + sources.length + " source(s) live");
+        return null;
+      });
+    }).then(function (result) {
+      preparing = false;
+      return result;
+    }, function (err) {
+      preparing = false;
+      throw err;
     });
   }
 
@@ -1814,6 +2030,8 @@
   }
 
   function start(options) {
+    if (options && options.socket === false) useSocketChannel = false;
+    else if (options && options.socket === true) useSocketChannel = true;
     if (running) return Promise.resolve(state);
     var opts = options || {};
     if (opts.name) selfName = String(opts.name).slice(0, 24);
@@ -1852,7 +2070,12 @@
         return buildReaders();
       })
       .then(function () {
-        return Promise.all([buildFinalPc(), buildScanners(), buildSources()]);
+        // The socket channel's pulse connections are made on demand, and the
+        // 128-source pool is exactly what made every getStats() slow in section
+        // 22 (4-8 s per reader poll with ~230 live connections, 0 ms with ~135).
+        // The pool is only built for the legacy carrier, which needs it.
+        return Promise.all([buildFinalPc(), buildScanners(),
+          useSocketChannel ? Promise.resolve(null) : buildSources()]);
       })
       .then(function () {
         return finalPortOf();
@@ -1931,7 +2154,14 @@
         phase: currentPhase, role: role, peerAddress: peerAddress, peerPort: peerPort,
         peerTargets: peerTargets, ownSockets: gridSockets().map(function (s) { return s.port; }),
         arrivals: arrivals.length, sources: sources.length, attempt: attempt,
-        exchangeActive: exchange.active, exchangeDone: exchange.done
+        exchangeActive: exchange.active, exchangeDone: exchange.done,
+        // the socket channel's own numbers: columns (the peer's sockets), bits
+        // per pulse, pulses fired, and how many of them the receiver has read
+        sym: {
+          columns: SYM.cols.length, bitsPerPulse: SYM.perPulse,
+          pulses: SYM.pulses.length, settled: SYM.settled,
+          arrivals: collectSocketArrivals().length
+        }
       };
     },
     onEvent: function (cb) { if (typeof cb === "function") subs.push(cb); },

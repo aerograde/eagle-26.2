@@ -451,7 +451,14 @@ async function handleApi(req, res, opts, url) {
         return true;
       }
       const id = randomBytes(8).toString("hex");
-      peer = { id, name: name || `player-${id.slice(0, 4)}`, room, scope, addr, seen: 0, mailbox: [], cursor: 0 };
+      // ttlMs belongs on the peer itself, not only in DEFAULTS: sweepExpired()
+      // reads peer.ttlMs, and a peer created without it never compares as
+      // expired (`now - seen > undefined` is false), so the sweeper was a no-op
+      // and every player who ever loaded the page stayed on the roster.  Live
+      // symptom: /health reported an 11-hour-old peer, and the client kept
+      // "rebuilding the link" to ghosts that had closed hours earlier.
+      peer = { id, name: name || `player-${id.slice(0, 4)}`, room, scope, addr,
+        seen: 0, ttlMs: Math.max(opts.ttlMs, 10000), mailbox: [], cursor: 0 };
       peers.set(id, peer);
       addToGroup(peer);
       log(`peer ${peer.id} (${peer.name}) joined from ${addr} [${scope}]`);
