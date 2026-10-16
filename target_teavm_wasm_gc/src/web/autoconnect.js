@@ -105,6 +105,11 @@
   // nothing was ever started.  Both halves now say 4, and the bridge builds its
   // comparison from its own constant so a future bump cannot leave a literal
   // behind again.  Keep the numbers equal when either side changes.
+  // Kept at 4: the game-side bridge compares this number and gates every call on an
+  // exact match, and the engine's new behaviour - starting its own discovery when
+  // the page opens, reading a frame by merging its two copies - crosses no new API.
+  // A bump here without a wasm rebuild would switch the whole tier off in the
+  // shipped artifact, whose game half is the previously built one.
   var VERSION = 4;
   if (window.__eaglerAC && window.__eaglerAC.version === VERSION) {
     return; // already installed
@@ -176,9 +181,9 @@
   var LIST_MIN_SHOTS = 2;                  // a listed socket must have heard this many
   var COPY_COUNT = 3;
   var QUIET_MS = 900;                      // no arrivals this long: the window is ours
-  // payload: magic(2) id(2) fingerprint(32) final port(2) crc16(2) = 40 bytes
+  // payload: magic(2) id(2) fingerprint(32) final port(2) crc32(4) = 42 bytes
   var PAYLOAD_MAGIC = 0xA53C;
-  var PAYLOAD_BYTES = 40;
+  var PAYLOAD_BYTES = 42;
   var PAYLOAD_BITS = PAYLOAD_BYTES * 8;
 
   // ------------------------------------------------------------- pool sizes
@@ -269,18 +274,38 @@
   // short list is a *different* alphabet, not a slow transmission.  It polls
   // while rounds still find sockets and stops after two empty ones; this is the
   // ceiling on that.
-  var PROBE_WAIT_MS = 45000;
-  // A readback with nothing in it yet is not a settled readback: the first
-  // answer can take this long to appear at all (see the stall rule below).
-  var PROBE_SETTLE_MIN_MS = 20000;    // How many rounds without a new socket the readback waits before it calls the
-    // list settled.  Waiting longer looks tempting - the list's size is what a
-    // frame costs (8 columns is 3 bits per pulse and a 107-pulse frame, 16 columns
-    // is 4 bits and 80) - but it was tried and reverted: a readback that keeps
-    // polling while the peer starts its own exchange reads back the peer's
-    // short-lived *pulse* sockets too (31 and 33 sockets for a peer with 16
-    // readers), and a column the peer does not own is a pulse that never lands.
-    // pulseConnection() removes the cause; this keeps the readback short anyway,
-    // because the columns a sweep announces have to be the peer's readers.
+  var PROBE_WAIT_MS = 30000;
+  // A readback with nothing in it yet is not a settled readback: the first answer
+  // can take seconds to appear at all (see the stall rule below).  It is also the
+  // ceiling on waiting for a wider one.  Waiting longer looks tempting - the list's
+  // size is what a frame costs (8 columns is 3 bits per pulse and a 112-pulse copy,
+  // 12 columns is 3.58 bits and 94) - but was tried and reverted: a readback that
+  // keeps polling while the peer starts its own exchange reads back the peer's
+  // short-lived *pulse* sockets too (31 and 33 sockets for a peer with 16 readers),
+  // and a column the peer does not own is a pulse that never lands.  Measured the
+  // other way: a readback settled at 6 of 12 sockets kept polling to its full 45 s
+  // deadline for a socket that never came, and both peers paid it - 33 s spent to
+  // shorten the frame by ~16 s.  Past this many milliseconds a settled list is
+  // taken as it is and the frame is coded in base K instead (see baseKNeed).
+  var PROBE_SETTLE_MIN_MS = 12000;
+  // One check per port, and that is a measured choice, not a default: firing every
+  // port twice (from a different scanner, so the second check is not a no-op) was
+  // implemented to widen a short readback, and it does the opposite.  On this host
+  // the peer's address is the machine's own, so any local socket bound there answers
+  // a check - the readback then reads *closing* sockets and the peer's transient
+  // connections as columns, which is item 26 of the findings, and the second shot
+  // doubles the chances of catching one.  Measured on the shipped artifact with two
+  // shots: the readback came back with 32 sockets for a peer that owns 14, so 20 of
+  // the frame's columns were sockets nothing could land on, 55 of 148 pulses never
+  // arrived and neither side decoded.  One shot read 6-12 of 12 in the same runs.
+  // A wider alphabet is worth having - it is a shorter frame - but it has to be
+  // earned by confirming the sockets, not by asking twice.
+  var PROBE_SHOTS = 1;
+  // A readback below this many sockets is not an alphabet the frame can be aimed
+  // at, so it is probed once more rather than proceeded on.
+  var PROBE_RETRY_WAIT_MS = 15000;
+  // Rounds without a new socket before the readback calls the list settled (see the
+  // stop rule in probeFromScanners).
   var PROBE_STALL_ROUNDS = 3;
   // A readback that yields fewer than two sockets is not an alphabet at all: the
   // socket channel fires at one socket per symbol and refuses to aim at a single
@@ -293,6 +318,13 @@
   // 3 minutes of transmission.  Keep probing for a wider one while the peer's
   // readers are still answering their first checks.
   var PROBE_MIN_COLUMNS = 4;
+  // The list is probed at most this many times per attempt (see probePeerPorts).
+  var PROBE_WAVES = 2;
+  // What the readback is *aimed* at: below this many sockets the frame is coded
+  // across fewer than eight columns (under three bits per pulse), and a readback
+  // that settles there is still polled until the deadline, because the checks are
+  // already in flight and the peer's readers are what is late.
+  var PROBE_TARGET_COLUMNS = 8;
   var BURST_FIRES = 40;          // fires per tick, so the stats thread keeps up
   var BURST_GAP_MS = 12;
   // The locate readback visits every scanner once per round and only then looks
@@ -554,6 +586,17 @@
 
   function clearFallbackTimer() {
     if (fallbackTimer) { window.clearTimeout(fallbackTimer); fallbackTimer = 0; }
+  }
+
+  // The code tier's budget is about a player who is looking for a peer, and the game
+  // says so by naming them (see adoptName and start).  The module's own boot start
+  // has no name, so this clock waits for the game's call rather than running from the
+  // page's first moment: a page that has only been opened never raises the fallback,
+  // and the game's prompt - which shows a code screen when this flag is set - cannot
+  // interrupt somebody who is still on the title screen.
+  function startFallbackClock() {
+    if (codeMode || fallbackTimer || fallbackRaised || state === "connected") return;
+    fallbackTimer = window.setTimeout(maybeFallback, FALLBACK_AFTER_MS);
   }
 
   function maybeFallback() {
@@ -1148,21 +1191,33 @@
   // reader with two candidates waiting 400 ms, once 37 s, behind scanner polls).
   // A source carries one or two candidates, and the readback polls until a
   // deadline instead of once, because a loaded machine answers slowly.
-  function probeFromScanners(address, ports, label, deadlineMs) {
+  function probeFromScanners(address, ports, label, deadlineMs, minColumns, shots) {
     if (!address || !scanners.length || !ports.length) return Promise.resolve([]);
+    // Every port is fired `shots` times, each from a different scanner: the same
+    // (source, target) pair is a no-op at the ICE layer (see fire), so a second
+    // shot from the same connection would fire nothing at all.  A dropped packet
+    // costs a column, and a lost column is a longer frame for both peers.
+    var want = Math.max(1, shots || 1);
+    var targets = [];
+    for (var r = 0; r < want; r++) {
+      for (var p = 0; p < ports.length; p++) {
+        targets.push({ port: ports[p], scanner: (p + r * 7 + (r ? 3 : 0)) % scanners.length });
+      }
+    }
     var i = 0;
     function burst() {
       var n = 0;
-      while (i < ports.length && n < BURST_FIRES) {
-        fire(scanners[i % scanners.length], address, ports[i]);
+      while (i < targets.length && n < BURST_FIRES) {
+        fire(scanners[targets[i].scanner], address, targets[i].port);
         i++; n++;
       }
-      if (i >= ports.length) return Promise.resolve();
+      if (i >= targets.length) return Promise.resolve();
       return sleep(BURST_GAP_MS).then(burst);
     }
     var found = Object.create(null);
-    log("ports", label + ": " + ports.length + " checks over " + scanners.length
-      + " scanner(s) (~" + Math.ceil(ports.length / scanners.length) + " each)");
+    log("ports", label + ": " + targets.length + " check(s) over " + scanners.length
+      + " scanner(s) (~" + Math.ceil(targets.length / scanners.length) + " each, "
+      + want + " shot(s) per port)");
     return burst().then(function () {
       var started = now();
       var deadline = started + deadlineMs;
@@ -1206,17 +1261,35 @@
           if (count === 0 && elapsed < PROBE_SETTLE_MIN_MS) {
             stalled = 0;
           }
-          if (stalled >= PROBE_STALL_ROUNDS && (count > 0 || elapsed >= PROBE_SETTLE_MIN_MS)) {
+          // A short readback has not stopped growing, it has stopped answering
+          // *yet*: every check was already fired when this poll started, and ICE
+          // paces its queued checks over the next minute (item 6 measured probe
+          // arrivals 66 s after the probe), so waiting longer costs time and no
+          // connections.  And the list's size *is* the frame's length - a settled
+          // 4-socket readback is a 160-pulse copy at two bits per pulse, which is
+          // past any hole-filling, while the same sockets in base 4 every pulse
+          // still carries two bits and twelve sockets in base 12 is a 90-pulse
+          // copy - so a readback below the target keeps polling to the deadline.
+          var settled = stalled >= PROBE_STALL_ROUNDS
+            && (count > 0 || elapsed >= PROBE_SETTLE_MIN_MS);
+          var wide = !minColumns || count >= minColumns;
+          // A settled list is taken once it is wide enough *or* once waiting for a
+          // wider one has cost as much as the pixels it saves: a 6-socket list is a
+          // 130-pulse copy and a 12-socket list a 94-pulse one, so a socket is
+          // worth ~2 x 36 x gap ms of frame and no more than that of polling.
+          if (settled && (wide || elapsed >= PROBE_SETTLE_MIN_MS)) {
             log("ports", label + ": readback settled at " + count + " socket(s) after "
-              + Math.round(elapsed) + " ms (" + stalled + " round(s) with no new one)");
+              + Math.round(elapsed) + " ms (" + stalled + " round(s) with no new one"
+              + (wide ? "" : "; the frame will be coded in base " + count) + ")");
             return;
           }
           if (now() > deadline) {
             log("ports", label + ": readback hit its " + Math.round(elapsed / 1000)
-              + " s deadline with " + count + " socket(s)");
+              + " s deadline with " + count + " socket(s)"
+              + (wide ? "" : "; the frame will be coded in base " + count));
             return;
           }
-          return sleep(750).then(poll);
+          return sleep(600).then(poll);
         });
       })();
     }).then(function () {
@@ -1226,6 +1299,19 @@
     });
   }
 
+  // A note on a lever that was tried and reverted here: *confirming* the readback
+  // before announcing it, by re-firing one check per candidate from a fresh
+  // out-of-window connection and dropping the ports that do not answer a second time.
+  // It is the obvious answer to a phantom column (a socket that was already going
+  // away still answers the probe once, and the peer can then never observe that
+  // column - see item 26), and it does catch one.  It is not shippable as measured:
+  // in the run that produced it the readback was *exact* (11 sockets for a peer with
+  // 11, 12 for a peer with 12) and the confirmation still dropped four live reader
+  // sockets after 15 s of polling, which is a 120-pulse frame instead of a 94-pulse
+  // one - a worse trade than the rare dead port it removes.  The honest reading is
+  // that "did this socket answer a second time" is not a reliable question on this
+  // host: ICE paces the checks a connection carries, and a live socket whose answer
+  // is merely late is indistinguishable from one that has gone.
   function peerPortsOf(ports) {
     var found = Object.create(null);
     var list = [];
@@ -1247,9 +1333,14 @@
   function probePeerPorts(address, seeds) {
     var ports = [];
     for (var p = W_START; p <= W_END; p++) ports.push(p);
-    return probeFromScanners(address, ports, "peer socket probe", PROBE_WAIT_MS).then(function (found) {
-      var set = Object.create(null);
-      for (var i = 0; i < found.length; i++) set[found[i]] = true;
+    var wave = 0;
+    var set = Object.create(null);
+    function run() {
+      wave++;
+      return probeFromScanners(address, ports, "peer socket probe",
+        wave === 1 ? PROBE_WAIT_MS : PROBE_RETRY_WAIT_MS,
+        PROBE_TARGET_COLUMNS, PROBE_SHOTS).then(function (found) {
+        for (var i = 0; i < found.length; i++) set[found[i]] = true;
       for (var s = 0; s < (seeds || []).length; s++) {
         if (!seeds[s]) continue;
         // A seed only names a symbol column if it is a *reader* socket: the window
@@ -1270,8 +1361,18 @@
         set[seeds[s]] = true;
       }
       peerTargets = Object.keys(set).map(Number).sort(function (a, b) { return a - b; });
+      // The list *is* the alphabet, so a readback too short to be one is probed
+      // again rather than proceeded on: the frame's whole length is decided here,
+      // and one more wave costs checks that are free next to the frame it shortens.
+      if (peerTargets.length < PROBE_MIN_COLUMNS && wave < PROBE_WAVES) {
+        log("ports", "peer socket probe: " + peerTargets.length
+          + " socket(s) is not an alphabet to code a frame in; probing again");
+        return run();
+      }
       return peerTargets;
-    });
+      });
+    }
+    return run();
   }
 
 
@@ -1566,6 +1667,25 @@
     return bytes;
   }
 
+  // CRC-32 (IEEE), not CRC-16.  The hole search is the only judge of a frame that
+  // arrived short, and it accepts a candidate on the checksum alone.  A 16-bit
+  // checksum accepts a wrong candidate once in 65536 tries, so a copy whose search
+  // enumerates 20000 candidates comes back with a 30% chance of being *wrong* - and
+  // the magic bytes cannot help, because the holes sit behind them and every
+  // candidate carries the same magic.  That is not hypothetical: the first run of
+  // tmp/autoconnect/test-decode.mjs after the base-K change returned a payload with
+  // another fingerprint's 32 bytes from a four-hole base-12 copy (8466 candidates,
+  // no false-accept luck needed - 13% per such copy), and a wrong fingerprint burns
+  // the attempt on a socket that will never answer.  CRC-32 takes that to 1 in 2^32
+  // per candidate, which is what makes the enumeration safe to run at all.
+  function crc32(bytes) {
+    var crc = -1;                                   // 0xFFFFFFFF, as a signed int
+    for (var i = 0; i < bytes.length; i++) {
+      crc = crc ^ (bytes[i] & 0xFF);
+      for (var j = 0; j < 8; j++) crc = (crc >>> 1) ^ (0xEDB88320 & -(crc & 1));
+    }
+    return (crc ^ -1) >>> 0;
+  }
   function crc16(bytes) {
     var crc = 0xFFFF;
     for (var i = 0; i < bytes.length; i++) {
@@ -1598,8 +1718,8 @@
     var fp = fingerprintBytes(fingerprint);
     for (var i = 0; i < 32; i++) body.push(fp[i] || 0);
     body.push((finalPort >> 8) & 0xFF, finalPort & 0xFF);
-    var crc = crc16(body);
-    body.push((crc >> 8) & 0xFF, crc & 0xFF);
+    var crc = crc32(body);
+    body.push((crc >>> 24) & 0xFF, (crc >>> 16) & 0xFF, (crc >>> 8) & 0xFF, crc & 0xFF);
     return { bytes: body, bits: bitsFromBytes(body) };
   }
 
@@ -1607,9 +1727,10 @@
     if (!bits || bits.length < PAYLOAD_BITS) return null;
     var bytes = bytesFromBits(bits, PAYLOAD_BYTES);
     if (((bytes[0] << 8) | bytes[1]) !== PAYLOAD_MAGIC) return null;
-    var body = bytes.slice(0, bytes.length - 2);
-    var crc = (bytes[bytes.length - 2] << 8) | bytes[bytes.length - 1];
-    if (crc16(body) !== crc) return null;
+    var body = bytes.slice(0, bytes.length - 4);
+    var crc = ((bytes[bytes.length - 4] << 24) | (bytes[bytes.length - 3] << 16)
+      | (bytes[bytes.length - 2] << 8) | bytes[bytes.length - 1]) >>> 0;
+    if (crc32(body) !== crc) return null;
     var fp = [];
     for (var i = 0; i < 32; i++) fp.push(bytes[4 + i]);
     var port = (bytes[36] << 8) | bytes[37];
@@ -1685,10 +1806,27 @@
   // and over how many start positions it may look for them.
   var DECODE_SKIPS = 3;
   var DECODE_STARTS = 12;
+  // How many arrival bursts one read offers the decoder: a copy of the frame is a
+  // burst, the sweep's rounds are others, and the whole span is tried last.
+  var DECODE_BURSTS = 4;
   // Operations the skip pass may spend per candidate alphabet (a few hundred
   // thousand symbol steps run in well under a second).
   var DECODE_BUDGET = 400000;
-  var SYM_PULSE_GAP_MS = 600;   // floor for the adaptive gap below (see pulseGapMs)
+  // What one read may spend decoding in total, across every (burst, candidate)
+  // attempt: the read loop polls every 400 ms and the readers have to get their
+  // stats passes in, so a read never occupies the page indefinitely.
+  var DECODE_READ_BUDGET = 4000000;
+  var decodeOpsLeft = DECODE_READ_BUDGET;
+  // Floor for the adaptive gap below (see pulseGapMs).  It is the frame's clock:
+  // a copy is `need` x gap long, so 112 pulses at 600 ms is 67 s and the two
+  // copies 136 s of a 186 s run.  The gap only has to clear the *reader's* read
+  // cadence - a pulse cannot be reported before the first poll that follows it,
+  // and the reader round over twelve readers costs ~250-400 ms - and 600 was
+  // twice that.  450 keeps more than a cadence of margin, stays above
+  // PULSE_DUP_MS (the window that folds a pulse's two arrivals into one symbol),
+  // and any read that still puts a pulse in the neighbouring slot is repaired by
+  // the two merged copies (see decodeSlottedPair).
+  var SYM_PULSE_GAP_MS = 450;
   // A pulse connection only has to live until the peer's reader has sampled its
   // arrival.  The old fixed 700 ms at an 80 ms gap assumed a ~53 ms report
   // lattice, measured on a quiet page; a loaded page answers a stats pass in
@@ -1720,7 +1858,7 @@
   }
   function pulseGapMs() {
     var cadence = readerCadenceMs();
-    return Math.min(1500, Math.max(600, Math.round(cadence * 1.6)));
+    return Math.min(1500, Math.max(SYM_PULSE_GAP_MS, Math.round(cadence * 1.6)));
   }
   var lastStreamReadAt = 0;
   var STREAM_READ_MS = 400;          // a stream read is not free
@@ -1736,12 +1874,116 @@
     return b;
   }
 
-  // The bits of one pulse, big-endian, exactly as the receiver reads them back
-  // (the decoder pushes (col >> b) & 1 for b from perPulse-1 down to 0).
-  function symbolAt(bits, index, perPulse) {
-    var sym = 0;
-    for (var b = 0; b < perPulse; b++) sym = (sym << 1) | (bits[index + b] ? 1 : 0);
-    return sym;
+  // ------------------------------------------------- base-K on one big integer
+  // The alphabet is the peer's column list and a symbol is the *index* of the
+  // column a pulse landed on, so K columns carry log2(K) bits per pulse and no
+  // power of two is needed.  Reading the payload out of a power-of-two *prefix*
+  // of the list (8 of 12 sockets, 3 bits per pulse) wastes a third of the
+  // alphabet, and it lengthens the frame exactly when the readback is short:
+  // seven sockets read back is a 160-pulse copy at two bits and a 114-pulse copy
+  // in base 7, and the pulse count is the whole reliability question (a copy is
+  // decodable while it loses no more than a few pulses).  So the payload is one
+  // integer in base K, most significant digit first, padded to `need` digits.
+  var baseKNeedCache = Object.create(null);
+  // The number of base-K digits that covers every PAYLOAD_BITS-bit value: the
+  // smallest n with K^n >= 2^PAYLOAD_BITS.
+  function baseKNeed(K) {
+    var cached = baseKNeedCache[K];
+    if (cached) return cached;
+    var limit = Math.pow(2, PAYLOAD_BITS), v = 1, n = 0;
+    while (v < limit) { v *= K; n++; }
+    baseKNeedCache[K] = n;
+    return n;
+  }
+  // The payload as an arbitrary-precision integer in base 2^16, least significant
+  // word first.  PAYLOAD_BITS is a multiple of 16, so every word is full.
+  function bitsToWords(bits) {
+    var words = [];
+    for (var end = bits.length; end > 0; end -= 16) {
+      var start = Math.max(0, end - 16), w = 0;
+      for (var i = start; i < end; i++) w = (w << 1) | (bits[i] ? 1 : 0);
+      words.push(w);
+    }
+    return words;
+  }
+  function wordsToBits(words, bitCount) {
+    var bits = new Array(bitCount);
+    for (var i = 0; i < bitCount; i++) bits[i] = 0;
+    var pos = bitCount - 1;
+    for (var w = 0; w < words.length && pos >= 0; w++) {
+      var v = words[w];
+      for (var b = 0; b < 16 && pos >= 0; b++) { bits[pos--] = v & 1; v >>= 1; }
+    }
+    return bits;
+  }
+  // Payload bits -> exactly `need` base-K digits, most significant first.  One
+  // running remainder per word keeps every intermediate under 2^53 for K <= 64.
+  function payloadToDigits(bits, K) {
+    var need = baseKNeed(K);
+    var words = bitsToWords(bits);
+    var digits = [];
+    while (digits.length < need) {
+      var rem = 0;
+      for (var i = words.length - 1; i >= 0; i--) {
+        var cur = rem * 65536 + words[i];
+        words[i] = Math.floor(cur / K);
+        rem = cur - words[i] * K;
+      }
+      while (words.length && words[words.length - 1] === 0) words.pop();
+      digits.push(rem);
+    }
+    digits.reverse();
+    return digits;
+  }
+  // `need` base-K digits -> the payload's bits, or null when a digit is out of
+  // range for this K (an arrival that is not a column is filtered before this).
+  function digitsToWords(digits, K) {
+    var words = [];
+    for (var i = 0; i < digits.length; i++) {
+      var d = digits[i];
+      if (!(d >= 0 && d < K)) return null;
+      var carry = d;
+      for (var j = 0; j < words.length; j++) {
+        var cur = words[j] * K + carry;
+        words[j] = cur & 0xFFFF;
+        carry = (cur - words[j]) / 65536;
+      }
+      if (carry) words.push(carry);
+    }
+    return words;
+  }
+  function digitsToBits(digits, K) {
+    var words = digitsToWords(digits, K);
+    return words ? wordsToBits(words, PAYLOAD_BITS) : null;
+  }
+  // Word arithmetic for the hole search: a candidate fill is the base value plus one
+  // multiple of a power of K per hole, so a candidate is re-derived in ~500
+  // operations instead of a multiply-accumulate per digit (which the enumeration
+  // pays twenty thousand times over).
+  function wordsTimesSmall(w, m) {
+    var out = [], carry = 0;
+    for (var i = 0; i < w.length; i++) {
+      var cur = w[i] * m + carry;
+      out.push(cur & 0xFFFF);
+      carry = (cur - out[i]) / 65536;
+    }
+    while (carry) { out.push(carry & 0xFFFF); carry = (carry - (carry & 0xFFFF)) / 65536; }
+    return out;
+  }
+  function wordsAdd(a, b) {
+    var out = [], carry = 0;
+    var n = Math.max(a.length, b.length);
+    for (var i = 0; i < n || carry; i++) {
+      var cur = (i < a.length ? a[i] : 0) + (i < b.length ? b[i] : 0) + carry;
+      out.push(cur & 0xFFFF);
+      carry = (cur - out[i]) / 65536;
+    }
+    return out;
+  }
+  function wordsOfPow(K, exp) {
+    var w = [1];
+    for (var e = 0; e < exp; e++) w = wordsTimesSmall(w, K);
+    return w;
   }
 
   // -------------------------------------- the column list, told and not guessed
@@ -1764,8 +2006,11 @@
   // so a burst of arrivals is one round or one frame, and a round is short while
   // a frame is not.
   var ANNOUNCE_ROUNDS = 3;
-  var ANNOUNCE_GAP_MS = 400;        // between the pulses of one sweep round
-  var ANNOUNCE_SILENCE_MS = 2800;   // between rounds, and before the frame
+  // A column that arrived this many times was seen in that many of the sweep's
+  // rounds - the check that catches a *partial* sweep read (see readColumnSweep).
+  var ANNOUNCE_CONFIRM = 2;
+  var ANNOUNCE_GAP_MS = 300;        // between the pulses of one sweep round
+  var ANNOUNCE_SILENCE_MS = 2000;   // between rounds, and before the frame
   var ANNOUNCE_SPLIT_MS = 1900;     // silence that ends a burst (see arrivalBursts)
   var ANNOUNCE_MAX_ENTRIES = 32;    // a sweep round is at most this many pulses
   // The frame is transmitted more than once per attempt.  A pulse the receiver's
@@ -1825,7 +2070,39 @@
     });
   }
 
-  // Tell the peer which of its sockets this side will aim at.
+  // Tell the peer which of its sockets this side will aim at - one list pulse, fired
+  // from one of our *reader* sockets.
+  //
+  // The sweep and the frame are the same mechanism - a connection fired at a column -
+  // so nothing about an arrival says which of the two sent it, and that is what the
+  // frame's read pays for: the peer's sweep lands inside our frame (measured on the
+  // shipped artifact: 48 extra arrivals over a 188-pulse frame, 24 of them the peer's
+  // sweep, read against an alphabet that was exactly right, and no decode).  The
+  // socket class is the one thing the sender controls.  A list pulse leaves from a
+  // reader, whose socket is in the window by construction; a frame pulse leaves from
+  // whatever ephemeral socket the OS hands a fresh connection, which is in the window
+  // about three times in a hundred.  So an arrival whose source is in the window is
+  // list traffic, and the frame's read drops it - at the price of the three frame
+  // pulses in a hundred whose own socket happens to land in the window, which is what
+  // the slot read and the two merged copies are for.  Firing from the readers also
+  // costs no connections: the sweep used to spend one per pulse.
+  //
+  // The stride keeps every (socket, target) pair distinct across the sweep's rounds,
+  // because the same pair fired twice is silently a no-op at the ICE layer (see
+  // fire) - that would lose a list pulse rather than send it twice.
+  function listPulse(col, round, colIndex, life) {
+    var R = readers.length;
+    var pc = null;
+    if (R >= 3) {
+      var reader = readers[(colIndex + round * 7) % R];
+      if (reader && reader.pc) pc = reader.pc;
+    }
+    if (!pc) return pulseOnce(col, life);
+    return fire(pc, peerAddress, col).then(function (sent) {
+      return sent === false ? pulseOnce(col, life) : sent;
+    });
+  }
+
   function announceColumns(cols, gen) {
     var life = pulseLifeMs();
     var started = now();
@@ -1833,15 +2110,15 @@
     var chain = Promise.resolve();
     for (var r = 0; r < ANNOUNCE_ROUNDS; r++) {
       for (var k = 0; k < cols.length; k++) {
-        chain = chain.then(function (port) {
+        chain = chain.then(function (port, colIndex, round) {
           return function () {
             if (gen !== exchange.gen || !running || state === "connected") return null;
-            return pulseOnce(port, life).then(function () {
+            return listPulse(port, round, colIndex, life).then(function () {
               fired++;
               return sleep(ANNOUNCE_GAP_MS);
             });
           };
-        }(cols[k]));
+        }(cols[k], k, r));
       }
       chain = chain.then(function () {
         if (gen !== exchange.gen || !running || state === "connected") return null;
@@ -1862,12 +2139,15 @@
     var gen = ++exchange.gen;
     var payload = buildPayload();
     var cols = SYM.cols.slice();
-    var perPulse = symPerPulse(cols.length);
-    if (!perPulse) {
+    if (cols.length < 2) {
       log("grid", "no peer socket to aim at (" + cols.length + " column(s))");
       return Promise.resolve(false);
     }
-    var n = Math.ceil(payload.bits.length / perPulse);
+    // Every socket the probe settled on carries a digit, not just a power-of-two
+    // prefix of them (see payloadToDigits): the frame is as short as the list can
+    // make it, which is the one thing that decides whether a copy survives.
+    var K = cols.length;
+    var n = baseKNeed(K);
     var gap = pulseGapMs();
     var life = pulseLifeMs();
     // The sweep has to be inside the frame's budget: the receiver only decodes a
@@ -1875,18 +2155,18 @@
     var announceMs = ANNOUNCE_ROUNDS * (cols.length * ANNOUNCE_GAP_MS + ANNOUNCE_SILENCE_MS);
     SYM.t0 = now();
     SYM.cols = cols;
-    SYM.perPulse = perPulse;
+    SYM.perPulse = Math.round(Math.log(K) / Math.LN2 * 100) / 100;
     SYM.pulses = [];
     SYM.seen = Object.create(null);
     SYM.bestStream = 0;
-    // The payload's symbols, one per pulse.
-    var symbols = [];
-    for (var s0 = 0; s0 < n; s0++) symbols.push(symbolAt(payload.bits, s0 * perPulse, perPulse));
+    // The payload's digits, one per pulse, most significant first.
+    var symbols = payloadToDigits(payload.bits, K);
     SYM.copies = FRAME_COPIES;
     SYM.frameMs = announceMs + FRAME_COPIES * n * gap
       + (FRAME_COPIES - 1) * COPIES_GAP_MS + life + 2500;
     log("sym", "transmitting " + payload.bits.length + " bits as " + n + " pulse(s) x "
-      + perPulse + " bit(s) over " + cols.length + " peer socket(s), " + FRAME_COPIES
+      + (Math.round(Math.log(K) / Math.LN2 * 100) / 100) + " bit(s) in base " + K
+      + " over " + cols.length + " peer socket(s), " + FRAME_COPIES
       + " copy/copies; " + gap + " ms apart, kept " + life + " ms (stats pass "
       + Math.round(statsPassMs) + " ms) - after a " + Math.round(announceMs / 1000)
       + " s column sweep: " + cols.join(","));
@@ -2002,7 +2282,22 @@
       // the second filter, and it is the one that holds when a check was fired
       // once but aimed at something that is not a receiver (a census check at a
       // throwaway port, a probe that read one of our out-of-window sockets).
-      var isColumn = ownWindowPorts[a.port] === true
+      // An arrival on one of our own in-window sockets is a column, whether or not
+      // that socket is in the registered set: the probe readback is a *snapshot*
+      // of the peer's readers, and a reader can gain another in-window socket after
+      // the snapshot was taken - the peer aims its whole frame at it, and if this
+      // page filters those arrivals out because its own registration is stale, the
+      // column can never gather the repeats that would put it in a candidate list.
+      // Measured on the shipped artifact: a peer announced twelve sockets, this
+      // side could derive only nine of them from arrivals (three sockets' arrivals
+      // arrived on in-window sockets that were not in its registered set), read 221
+      // of 212 arrivals of the frame and decoded nothing - a loop it could not
+      // leave, because the arrivals that would have confirmed the list were the
+      // arrivals being dropped.  The window is the whole rule for arrivals a reader
+      // reports (a reader only ever reports its own sockets), so nothing else is
+      // filtered here any more.
+      var isColumn = inWindow(a.port)
+        || ownWindowPorts[a.port] === true
         || !!(SYM.peerCols && SYM.peerCols.indexOf(a.port) >= 0);
       if (!isColumn) { dropped++; continue; }
       // One pulse, two arrivals: a pulse connection owns two local UDP sockets
@@ -2019,6 +2314,13 @@
       var prev = SYM.lastByPort[a.port];
       if (prev !== undefined && a.at - prev < PULSE_DUP_MS) { collapsed++; continue; }
       SYM.lastByPort[a.port] = a.at;
+      // The sweep's pulses leave from a reader socket - in the window by
+      // construction - and a frame's pulse leaves from whatever socket the OS hands
+      // the fresh connection it was fired on, which is outside the window about 97
+      // times in a hundred.  So the source class says which read an arrival belongs
+      // to, and the frame's read drops the list's.  The *list* read keeps every
+      // arrival, because the sweep is exactly what it is looking for.
+      a.list = inWindow(a.source);
       out.push(a);
     }
     if (dropped && dropped > (SYM.droppedSeen || 0)) {
@@ -2059,20 +2361,34 @@
   // where the holes are: consecutive arrivals are one gap apart, and a gap of
   // about twice that is one pulse that never came.  Which symbol it carried is not
   // in the arrivals, so it becomes a variable and the CRC decides - at most
-  // DECODE_HOLES holes of 2^B symbols each, i.e. 32768 candidates for five holes,
-  // and only on a read that has a complete frame's worth of arrivals in hand, so
-  // the cost is paid once per copy rather than per poll.  Five holes covers a frame
-  // that lost 4.7% of its pulses; the payload's own port check (see parsePayload)
-  // keeps the false-candidate rate at
-  // 8^5 / 2^16 x 0.8% instead of one in two.
+  // DECODE_HOLES holes of K symbols each - 32768 candidates at K = 8 - and only
+  // on a read that has a complete frame's worth of arrivals in hand, so the cost
+  // is paid once per copy rather than per poll.  The payload's own port check (see
+  // parsePayload) keeps the false-candidate rate at 8^5 / 2^16 x 0.8% instead of
+  // one in two.
   var DECODE_HOLES = 5;
-  function decodeSlotted(frame, cols, perPulse, leadHoles) {
-    var need = Math.ceil(PAYLOAD_BITS / perPulse);
+  // The search enumerates K^holes digit combinations, so the allowance moves with
+  // the alphabet: 8 columns may lose five pulses of a 107-pulse copy (4.7%) and 12
+  // columns three of a 90-pulse copy (3.3%), while the search itself stays at or
+  // under 32768 candidates either way.
+  function holesAllowed(K) {
+    var h = 0, v = 1;
+    while (h < DECODE_HOLES && v * K <= 32768) { v *= K; h++; }
+    return h;
+  }
+  // The slots of one read: slot q is pulse q of the copy that was read, taken from
+  // the arrival *times* (the sender's cadence, measured off the read times for the
+  // same reason the stream is ordered by them - see collectSocketArrivals - because
+  // a stale receipt stamp would read as a hole that is not there) rather than from
+  // the position an arrival has in the stream.  A pulse that never arrived leaves
+  // its slot empty (-1); a second arrival in a slot that is already filled is a
+  // stray and changes nothing about the symbol that was sent - which is why a slot
+  // read survives the two arrivals a pulse leaves on its socket, and why a reader
+  // that reports two pulses in the opposite order to the one they were sent in
+  // still puts each of them in its own slot.
+  function slotDigits(frame, cols, leadHoles) {
     var n = frame.length;
     if (n < 4) return null;
-    // The cadence is measured off the read times for the same reason the stream is
-    // ordered by them (see collectSocketArrivals): a stale receipt stamp would
-    // read as a hole that is not there.
     var when = function (a) { return a.obsAt || a.at; };
     var gaps = [];
     for (var i = 1; i < n; i++) gaps.push(when(frame[i]) - when(frame[i - 1]));
@@ -2091,44 +2407,158 @@
       if (k < 0) continue;
       while (slots.length < k) slots.push(-1);     // a slot nothing landed in
       if (slots.length === k) slots.push(col);
-      // A second arrival in a slot that is already filled is a stray arrival, and
-      // a stray changes nothing about the symbol that was sent.
     }
+    return { slots: slots, gap: gap };
+  }
+
+  function decodeSlotted(frame, cols, leadHoles) {
+    var K = cols.length;
+    var need = baseKNeed(K);
+    var read = slotDigits(frame, cols, leadHoles);
+    if (!read) return null;
+    var slots = read.slots;
+    var gap = read.gap;
     if (slots.length < need) return null;          // the tail is still arriving
     var holes = [];
     for (var q = 0; q < need; q++) if (slots[q] < 0) holes.push(q);
-    if (!holes.length || holes.length > DECODE_HOLES) return null;
-    var K = 1 << perPulse;
+    if (!holes.length || holes.length > holesAllowed(K)) return null;
     var total = Math.pow(K, holes.length);
+    // The base value is this read with every hole read as a zero digit, and each
+    // hole adds one multiple of its own power of K - so a candidate costs a small
+    // multiply-add per hole and one pass to bits, not a reconstruction per digit.
+    var digits = new Array(need);
+    for (var q2 = 0; q2 < need; q2++) digits[q2] = slots[q2] < 0 ? 0 : slots[q2];
+    var base = digitsToWords(digits, K);
+    if (!base) return null;
+    var places = [];
+    for (var hp = 0; hp < holes.length; hp++) {
+      places.push(wordsOfPow(K, need - 1 - holes[hp]));
+    }
     for (var cand = 0; cand < total; cand++) {
-      var t = cand, bits = [];
-      for (var h = holes.length - 1; h >= 0; h--) { slots[holes[h]] = t % K; t = Math.floor(t / K); }
-      for (var q2 = 0; q2 < need; q2++) {
-        for (var b = perPulse - 1; b >= 0; b--) bits.push((slots[q2] >> b) & 1);
+      // This is the only unbounded work the decoder does, and a copy damaged past
+      // what a hole search can repair would otherwise be re-enumerated on every
+      // poll until the copy ends - so every candidate is charged to the read's
+      // budget and the search stops when the read has spent it all.
+      decodeOpsLeft -= need + 24;
+      if (decodeOpsLeft < 0) return null;
+      var t = cand, value = base;
+      for (var h = holes.length - 1; h >= 0; h--) {
+        var d = t % K;
+        t = Math.floor(t / K);
+        if (d) value = wordsAdd(value, wordsTimesSmall(places[h], d));
       }
-      var parsed = parsePayload(bits);
+      var parsed = parsePayload(wordsToBits(value, PAYLOAD_BITS));
       if (parsed) return { parsed: parsed, holes: holes.slice(), cand: cand, gap: gap };
-      for (var h2 = 0; h2 < holes.length; h2++) slots[holes[h2]] = -1;
     }
     return null;
   }
 
-  // Read a payload out of a symbol stream: for every position, try to take the
-  // next `need` arrivals as symbols of `alphabet`, and let the CRC decide.
-  function decodeStream(stream, alphabet, perPulse, budget) {
-    var need = Math.ceil(PAYLOAD_BITS / perPulse);
+  // The two copies of one frame are the same digit sequence sent twice, so a read
+  // that holds both of them is an erasure code rather than two chances.  Each
+  // copy's holes are filled from the other copy, a slot the two disagree on is left
+  // to the CRC (a stray arrival on one side, or a read whose own clock put a pulse
+  // in the neighbouring slot), and only a slot *neither* copy carried is unknown.
+  //
+  // That is the failure both failing runs of the shipped artifact ended in: a copy
+  // that lost four pulses of a 130-pulse frame is undecodable on its own - the slot
+  // read needs `need` slots and the contiguous read needs every arrival in order -
+  // while the same two copies merged decode on the first candidate.  The copies are
+  // aligned by pulse index, so the search tries the four ways their first pulses
+  // can be missing.
+  var DECODE_PAIR_CANDIDATES = 2048;
+  function decodeSlottedPair(a, b, cols) {
+    var K = cols.length;
+    var need = baseKNeed(K);
+    if (!need || !a || !b || a === b) return null;
+    for (var la = 0; la < 2; la++) {
+      for (var lb = 0; lb < 2; lb++) {
+        var A = slotDigits(a, cols, la);
+        var B = slotDigits(b, cols, lb);
+        if (!A || !B) continue;
+        if (A.slots.length < need || B.slots.length < need) continue;
+        var digits = new Array(need);
+        var loose = [];        // slots that are not one agreed digit, and their values
+        var holes = 0;
+        var clashes = 0;
+        var total = 1;
+        var over = false;
+        for (var q = 0; q < need; q++) {
+          var x = A.slots[q], y = B.slots[q];
+          if (x >= 0 && y >= 0) {
+            if (x === y) { digits[q] = x; continue; }
+            digits[q] = x < y ? x : y;
+            loose.push({ q: q, values: x < y ? [x, y] : [y, x] });
+            clashes++;
+            total *= 2;
+          } else if (x >= 0 || y >= 0) {
+            digits[q] = x >= 0 ? x : y;
+          } else {
+            var all = [];
+            for (var v = 0; v < K; v++) all.push(v);
+            digits[q] = 0;
+            loose.push({ q: q, values: all });
+            holes++;
+            total *= K;
+          }
+          if (total > DECODE_PAIR_CANDIDATES) { over = true; break; }
+        }
+        if (over) continue;
+        if (!loose.length) {
+          // Both copies carried every slot and agreed on all of them: there is
+          // nothing to search, and the CRC decides on this one reading.
+          var straight = parsePayload(digitsToBits(digits, K));
+          if (straight) return { parsed: straight, holes: 0, clashes: 0, cand: 0, total: 1 };
+          continue;
+        }
+        var base = digitsToWords(digits, K);
+        if (!base) continue;
+        // The candidate is the base with one digit changed per loose slot: the base
+        // already holds each slot's *lowest* value, so a candidate only ever adds
+        // (value - lowest) x K^place, exactly as the hole search does.
+        var places = [];
+        for (var s = 0; s < loose.length; s++) {
+          places.push(wordsOfPow(K, need - 1 - loose[s].q));
+        }
+        for (var cand = 0; cand < total; cand++) {
+          decodeOpsLeft -= need + 16 * loose.length;
+          if (decodeOpsLeft < 0) return null;
+          var t = cand, value = base;
+          for (var s2 = loose.length - 1; s2 >= 0; s2--) {
+            var vals = loose[s2].values;
+            var d = t % vals.length;
+            t = Math.floor(t / vals.length);
+            var delta = vals[d] - vals[0];
+            if (delta > 0) value = wordsAdd(value, wordsTimesSmall(places[s2], delta));
+          }
+          var parsed = parsePayload(wordsToBits(value, PAYLOAD_BITS));
+          if (parsed) {
+            return { parsed: parsed, holes: holes, clashes: clashes, cand: cand, total: total };
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  // Read a payload out of a stream of base-K digits: for every position, try to
+  // take the next `need` arrivals as digits of `alphabet` and let the CRC decide.
+  function decodeStream(stream, alphabet, budget) {
+    var K = alphabet.length;
+    var need = baseKNeed(K);
     var cols = [];
     for (var c = 0; c < stream.length; c++) cols.push(alphabet.indexOf(stream[c].port));
+    var digits = new Array(need);
     for (var start = 0; start + need <= stream.length; start++) {
-      var bits = [];
+      decodeOpsLeft -= need;
+      if (decodeOpsLeft < 0) return null;
       var usable = true;
       for (var i = 0; i < need; i++) {
         var col = cols[start + i];
         if (col < 0) { usable = false; break; }
-        for (var b = perPulse - 1; b >= 0; b--) bits.push((col >> b) & 1);
+        digits[i] = col;
       }
       if (!usable) continue;
-      var parsed = parsePayload(bits);
+      var parsed = parsePayload(digitsToBits(digits, K));
       if (parsed) return { parsed: parsed, start: start, alphabet: alphabet };
     }
     // Second pass, for a stream that carries a few arrivals the sender never
@@ -2149,17 +2579,18 @@
       if (ops > budget) break;
     }
     function walk(pos, k, left) {
-      if (k === need) return parsePayload(spills) || null;
+      if (k === need) return parsePayload(digitsToBits(spills, K)) || null;
       if (pos >= stream.length) return null;
       if (++ops > budget) return null;
-      // Consume this arrival as the next symbol.
+      decodeOpsLeft -= 2;
+      if (decodeOpsLeft < 0) return null;
+      // Consume this arrival as the next digit.
       var col = cols[pos];
       if (col >= 0) {
-        var added = perPulse;
-        for (var b = perPulse - 1; b >= 0; b--) spills.push((col >> b) & 1);
+        spills.push(col);
         var got = walk(pos + 1, k + 1, left);
         if (got) return got;
-        spills.length -= added;
+        spills.pop();
       }
       // Or skip it (a stray arrival), if the budget allows.
       if (left > 0) return walk(pos + 1, k, left - 1);
@@ -2203,80 +2634,67 @@
   // announced 3 rounds of 4 pulses never saw a column list on the other side,
   // while 8 pulses per round read fine - and with no list there is no alphabet, so
   // no frame can be read however clean it is).
+  // The lists the sweep may have announced, best first.
+  //
+  // The sweep fires every column ANNOUNCE_ROUNDS times, so the list can be
+  // checked against its own repeats: a column that arrived at least
+  // ANNOUNCE_CONFIRM times was seen in that many rounds, and a single arrival of a
+  // stray - the queued ICE checks the stream always carries - was not.  That is
+  // the check the ascending run of first appearances cannot make: a *partial* read
+  // of the sweep is still ascending and still a plausible length, so a shorter
+  // power of two was accepted as the alphabet and the frame that followed was read
+  // against a different index space (measured on the shipped artifact: `peer
+  // column list: 4 socket(s) from 1 round(s) of 4 pulse(s)` while the sender
+  // announced 8, and 234 of 320 arrivals decoded nothing).  Every candidate is
+  // offered to the decoder and the CRC picks between them, so a wrong list fails
+  // to decode - a retry instead of a bad alphabet.
   function readColumnSweep(stream) {
     var seenPort = Object.create(null);
     var order = [];
-    var firstAt = [];
+    var count = Object.create(null);
     for (var i = 0; i < stream.length; i++) {
       var p = stream[i].port;
+      count[p] = (count[p] || 0) + 1;
       if (seenPort[p]) continue;
       seenPort[p] = true;
       order.push(p);
-      firstAt.push(i);
     }
-    // The longest strictly ascending run of first appearances: the sweep, with any
-    // stray that got in before it simply left out of the run.
+    var out = [];
+    function add(cols, note) {
+      if (!cols || cols.length < 2 || cols.length > 64) return;
+      var key = cols.join(",");
+      for (var i = 0; i < out.length; i++) if (out[i].key === key) return;
+      out.push({ cols: cols, key: key, note: note });
+    }
+    // The list the sweep's own repeats confirm.  A column of the real list is hit
+    // by every sweep round and, once the frame arrives, by many of its pulses; a
+    // stray arrival is hit once or twice.  A fifth of the busiest socket is the
+    // same floor the doc's item 4 used for the same reason, and it is what drops a
+    // stray that happened to arrive twice while keeping every real column.
+    var maxCount = 0;
+    for (var c in count) if (count[c] > maxCount) maxCount = count[c];
+    var hot = [], confirmed = [];
+    var threshold = Math.max(ANNOUNCE_CONFIRM, Math.ceil(maxCount * 0.35));
+    for (var c2 in count) {
+      var port = Number(c2);
+      if (count[c2] >= ANNOUNCE_CONFIRM) confirmed.push(port);
+      if (count[c2] >= threshold) hot.push(port);
+    }
+    confirmed.sort(function (a, b) { return a - b; });
+    hot.sort(function (a, b) { return a - b; });
+    // The longest strictly ascending run of first appearances: the read the
+    // accepted run of this carrier took, kept as the last candidate because a
+    // partial read of it is exactly the plausible-but-wrong alphabet above.
     var bestFrom = 0, bestLen = 0, from = 0;
     for (var j = 1; j <= order.length; j++) {
       if (j < order.length && order[j] > order[j - 1]) continue;
       if (j - from > bestLen) { bestLen = j - from; bestFrom = from; }
       from = j;
     }
-    if (bestLen >= 2) {
-      var run = order.slice(bestFrom, bestFrom + bestLen);
-      var runBits = symPerPulse(run.length);
-      if (runBits && run.length === (1 << runBits)) {
-        return {
-          cols: run,
-          rounds: 1,
-          longest: run.length,
-          frame: stream.slice(firstAt[bestFrom + bestLen - 1] + 1)
-        };
-      }
-    }
-    return readColumnSweepBursts(stream);
-  }
-
-  function readColumnSweepBursts(stream) {
-    var bursts = arrivalBursts(stream);
-    var rounds = [], longest = 0;
-    for (var b = 0; b < bursts.length; b++) {
-      var len = bursts[b].to - bursts[b].from;
-      if (len < 2 || len > ANNOUNCE_MAX_ENTRIES) continue;
-      var ascending = true;
-      for (var j = bursts[b].from + 1; j < bursts[b].to; j++) {
-        if (stream[j].port <= stream[j - 1].port) { ascending = false; break; }
-      }
-      if (!ascending) continue;
-      rounds.push(bursts[b]);
-      if (len > longest) longest = len;
-    }
-    if (!rounds.length) return null;
-    // The sweep is ANNOUNCE_ROUNDS rounds of one length, and that length is a power
-    // of two - the symbols index the list.  So a union that is not a power of two
-    // long is a misread of the bursts (a round split in two, or a stretch of the
-    // frame that happens to ascend), and the response is to walk the length down
-    // until a candidate comes out with the size a sweep can have, rather than to
-    // give up on a sweep that is sitting in the stream.
-    for (var want = longest; want >= 2; want--) {
-      var set = Object.create(null);
-      var voting = 0, end = 0;
-      for (var r = 0; r < rounds.length; r++) {
-        if (rounds[r].to - rounds[r].from !== want) continue;
-        voting++;
-        if (rounds[r].to > end) end = rounds[r].to;
-        for (var k = rounds[r].from; k < rounds[r].to; k++) set[stream[k].port] = true;
-      }
-      if (!voting) continue;
-      var cols = [];
-      for (var p in set) cols.push(Number(p));
-      cols.sort(function (a, b) { return a - b; });
-      var bits = symPerPulse(cols.length);
-      if (bits && cols.length === (1 << bits)) {
-        return { cols: cols, rounds: voting, longest: want, frame: stream.slice(end) };
-      }
-    }
-    return null;
+    add(hot, "the sockets the repeats confirm");
+    add(confirmed, "every socket seen twice");
+    if (bestLen >= 2) add(order.slice(bestFrom, bestFrom + bestLen), "first appearances");
+    return out;
   }
 
   // Decode the peer's pulse stream by content, not by clock.
@@ -2309,6 +2727,7 @@
     if (now() - lastArrivalAt < SYM_SETTLE_MS) return null;      // let the tail land
     if (now() - lastStreamReadAt < STREAM_READ_MS) return null;  // reads are not free
     lastStreamReadAt = now();
+    decodeOpsLeft = DECODE_READ_BUDGET;
     var stream = collectSocketArrivals();
     SYM.settled = stream.length;
     if (stream.length < 8) return null;
@@ -2316,99 +2735,131 @@
     // alphabet is not inferred here - it is read off the air.  Both sides then
     // number the same sockets in the same order, which is the only way the CRC
     // can ever match (see the note above transmitSocket).
-    var sweep = readColumnSweep(stream);
-    if (sweep) {
-      var key = sweep.cols.join(",");
-      if (key !== SYM.peerKey) {
-        SYM.peerKey = key;
-        SYM.peerCols = sweep.cols;
-        log("sym", "peer column list: " + sweep.cols.length + " socket(s) from "
-          + sweep.rounds + " round(s) of " + sweep.longest + " pulse(s): " + key);
+    var candidates = readColumnSweep(stream);
+    var own = ownSocketAlphabet();
+    var lists = [];
+    for (var ci = 0; ci < candidates.length; ci++) {
+      var cand = candidates[ci];
+      // Every announced column has to be one of our own in-window sockets: the
+      // sweep lands on our readers by construction, so a column that is not ours
+      // means the read mixed something else into the list.
+      var foreign = 0;
+      for (var oi = 0; oi < cand.cols.length; oi++) {
+        if (own.indexOf(cand.cols[oi]) < 0) foreign++;
+      }
+      if (foreign) {
+        logThrottled("sym", "a peer column list candidate names " + foreign
+          + " socket(s) that are not ours - not the peer's list", 3000);
+        continue;
+      }
+      lists.push(cand);
+    }
+    // And one list the sweep cannot carry: this page's own in-window sockets.  The
+    // peer numbers the sockets its probe read, and a two-shot readback reads them
+    // all - so the sender's list *is* this list, and a sweep read that lost a column
+    // or two then still has a candidate that is right instead of three that are
+    // plausible and wrong (measured: the side whose sweep arrived complete was the
+    // side that decoded).  A wrong list costs one failed decode, the CRC decides.
+    if (own.length >= 2 && own.length <= 64) {
+      var ownKey = own.join(",");
+      var already = false;
+      for (var ci2 = 0; ci2 < lists.length; ci2++) if (lists[ci2].key === ownKey) already = true;
+      if (!already) {
+        lists.push({ cols: own, key: ownKey,
+          note: "every in-window socket this page owns (the peer's probe read them all)" });
       }
     }
-    var cols = SYM.peerCols;
-    if (!cols || cols.length < 2) return null;
-    var perPulse = symPerPulse(cols.length);
-    if (!perPulse) return null;
-    if (cols.length !== (1 << perPulse)) {
-      // The sender aims at a power-of-two prefix of its list, so a list that is
-      // not a power of two long is a misread sweep, not a narrow alphabet.
-      logThrottled("sym", "peer column list has " + cols.length + " entries, which"
-        + " is not a power of two - waiting for a clean sweep", 3000);
-      return null;
+    if (!lists.length) return null;
+    // Every socket any candidate names counts as a possible column for the arrival
+    // filter - not just the first candidate's - so a column that only the second
+    // candidate carries is still allowed to gather the repeats that would move it
+    // into the first one.
+    var announced = [];
+    for (var ai = 0; ai < lists.length; ai++) {
+      for (var aj = 0; aj < lists[ai].cols.length; aj++) {
+        if (announced.indexOf(lists[ai].cols[aj]) < 0) announced.push(lists[ai].cols[aj]);
+      }
     }
-    // Every announced column has to be one of our own in-window sockets: the
-    // sweep lands on our readers by construction, so a column that is not ours
-    // means the read mixed something else into the list.
-    var own = ownSocketAlphabet();
-    var foreign = 0;
-    for (var oi = 0; oi < cols.length; oi++) if (own.indexOf(cols[oi]) < 0) foreign++;
-    if (foreign) {
-      logThrottled("sym", "peer column list names " + foreign + " socket(s) that are not"
-        + " ours - the list is not the peer's; waiting for another sweep", 3000);
-      return null;
+    SYM.peerCols = announced;
+    if (lists[0].key !== SYM.peerKey) {
+      SYM.peerKey = lists[0].key;
+      log("sym", "peer column list: " + lists[0].cols.length + " socket(s) ("
+        + lists[0].note + "), " + lists.length + " candidate(s) from " + stream.length
+        + " arrival(s): " + lists[0].key);
     }
-    // The frame is what follows the sweep.  With no sweep in this read the whole
-    // stream is offered instead, and the decoder's start offsets walk past the
-    // sweep arrivals.
-    var frame = sweep && sweep.frame && sweep.frame.length ? sweep.frame : stream;
-    // The payload is sent more than once per attempt, and each copy is separated
-    // from the next by a silence longer than any gap inside a copy - so the copies
-    // arrive as separate bursts, and a copy damaged by a hole or a stray costs that
-    // copy instead of the read.  Each burst is decoded on its own, with the whole
-    // span tried last (a copy whose tail ran into the next one).
-    // Which arrivals to offer the decoder, as bursts.  A copy of the frame is one
-    // burst, and the sweep's rounds are others, so the candidates are the whole
-    // stream's bursts - the ones after the sweep first, since those are the copies
-    // - and not just what sits after the sweep's *last recognised* round: the
-    // rounds are dated by read time, so a round that a poll split in two, or a
-    // frame pulse that arrived during a round, can move where the reader thinks
-    // the sweep ended, and a frame looked for from the wrong offset is a frame
-    // that is not found (measured: 179 arrivals of a 160-pulse frame, read three
-    // rounds as one, "no payload yet" - the copy was there, the window was not).
-    var pieces = arrivalBursts(stream);
-    var sweepEnd = sweep ? stream.length - frame.length : 0;
+    // The frame arrives as bursts: the payload is sent more than once per attempt
+    // and each copy is separated from the next by a silence longer than any gap
+    // inside a copy.  A copy is the longest run of arrivals there is, so the bursts
+    // are tried longest first and the whole span last (a copy whose tail ran into
+    // the next one).
+    // The frame's arrivals: everything except the peer's list pulses (see a.list in
+    // collectSocketArrivals) and, of course, our own traffic.
+    var frame = [];
+    for (var fi = 0; fi < stream.length; fi++) if (!stream[fi].list) frame.push(stream[fi]);
+    var pieces = arrivalBursts(frame);
+    pieces.sort(function (a, b) { return (b.to - b.from) - (a.to - a.from); });
     var tried = [];
-    var seenRange = Object.create(null);
-    function takeBurst(b) {
-      if (b.to - b.from < 4) return;
-      var key = b.from + ":" + b.to;
-      if (seenRange[key]) return;
-      seenRange[key] = true;
-      tried.push(stream.slice(b.from, b.to));
+    for (var pi = 0; pi < pieces.length && tried.length < DECODE_BURSTS; pi++) {
+      if (pieces[pi].to - pieces[pi].from < 4) continue;
+      tried.push(frame.slice(pieces[pi].from, pieces[pi].to));
     }
-    for (var pi = 0; pi < pieces.length; pi++) if (pieces[pi].from >= sweepEnd) takeBurst(pieces[pi]);
-    for (var pj = 0; pj < pieces.length; pj++) if (pieces[pj].from < sweepEnd) takeBurst(pieces[pj]);
-    if (frame.length >= 4) {
-      var whole = { from: sweepEnd, to: stream.length };
-      if (!seenRange[whole.from + ":" + whole.to]) tried.push(frame);
+    if (frame.length >= 4) tried.push(frame);
+    // The copies before the bursts: the two longest bursts of a frame read are its
+    // two copies, and merged they repair what neither carries alone (see
+    // decodeSlottedPair).  It is the cheapest and the strongest read there is, so
+    // it goes first.
+    var need0 = baseKNeed(lists[0].cols.length);
+    var big = [];
+    for (var gi = 0; gi < pieces.length; gi++) {
+      if (pieces[gi].to - pieces[gi].from >= Math.max(6, Math.floor(need0 * 0.4))) {
+        big.push(pieces[gi]);
+      }
     }
-    if (!tried.length) tried.push(frame);
+    big.sort(function (a, b) { return a.from - b.from; });
+    for (var pi2 = 0; pi2 + 1 < big.length; pi2++) {
+      var copyA = frame.slice(big[pi2].from, big[pi2].to);
+      var copyB = frame.slice(big[pi2 + 1].from, big[pi2 + 1].to);
+      for (var li2 = 0; li2 < lists.length; li2++) {
+        var pair = decodeSlottedPair(copyA, copyB, lists[li2].cols);
+        if (pair) {
+          log("sym", "payload decoded by merging the two copies (" + copyA.length + " + "
+            + copyB.length + " arrival(s): " + pair.holes + " slot(s) only one of them"
+            + " carried, " + pair.clashes + " the two disagree on, candidate " + pair.cand
+            + " of " + pair.total + ") against the " + lists[li2].cols.length
+            + "-socket list (" + lists[li2].note + ")");
+          return pair.parsed;
+        }
+      }
+    }
+    // Every (burst, candidate) pair shares one read's decode budget, so a page
+    // never spends a whole frame inside the decoder on a single poll.
+    var share = Math.max(60000, Math.floor(DECODE_BUDGET / (tried.length * lists.length)));
     for (var ti = 0; ti < tried.length; ti++) {
       var burst = tried[ti];
-      // The first candidate is the one that costs nothing to try in full; the rest
-      // share a smaller budget so a read never spends a whole frame decoding.
-      var budget = ti === 0 ? DECODE_BUDGET : Math.min(DECODE_BUDGET, 80000);
-      var hit = decodeStream(burst, cols, perPulse, budget);
-      if (hit) {
-        log("sym", "payload decoded from " + burst.length + " arrival(s) at position "
-          + hit.start + " of copy " + (ti + 1) + " of " + tried.length + " against the"
-          + " announced " + cols.length + "-socket list, " + perPulse
-          + " bit(s) per pulse: " + cols.join(","));
-        return hit.parsed;
-      }
-      // Nothing contiguous fits, so try this copy as a *slotted* read: the cadence
-      // is in the receipts, so a pulse that never arrived is a hole, and the CRC
-      // picks the symbol that fills it.
-      var filled = decodeSlotted(burst, cols, perPulse, 0)
-        || decodeSlotted(burst, cols, perPulse, 1);
-      if (filled) {
-        log("sym", "payload decoded by filling " + filled.holes.length + " hole(s) in a "
-          + burst.length + "-arrival copy " + (ti + 1) + " of " + tried.length
-          + " (candidate " + filled.cand + " of "
-          + Math.pow(1 << perPulse, filled.holes.length) + ", cadence measured at "
-          + filled.gap + " ms) against the announced " + cols.length + "-socket list");
-        return filled.parsed;
+      for (var li = 0; li < lists.length; li++) {
+        var cols = lists[li].cols;
+        var K = cols.length;
+        var hit = decodeStream(burst, cols, share);
+        if (hit) {
+          log("sym", "payload decoded from " + burst.length + " arrival(s) at position "
+            + hit.start + " of burst " + (ti + 1) + " of " + tried.length + " against"
+            + " the " + K + "-socket list (" + lists[li].note + ", "
+            + (Math.round(Math.log(K) / Math.LN2 * 100) / 100) + " bit(s) per pulse, "
+            + baseKNeed(K) + " pulse(s) per copy): " + cols.join(","));
+          return hit.parsed;
+        }
+        // Nothing contiguous fits, so try this burst as a *slotted* read: the
+        // cadence is in the receipts, so a pulse that never arrived is a hole, and
+        // the CRC picks the digit that fills it.
+        var filled = decodeSlotted(burst, cols, 0) || decodeSlotted(burst, cols, 1);
+        if (filled) {
+          log("sym", "payload decoded by filling " + filled.holes.length
+            + " hole(s) in a " + burst.length + "-arrival burst " + (ti + 1) + " of "
+            + tried.length + " (candidate " + filled.cand + " of "
+            + Math.pow(K, filled.holes.length) + ", cadence measured at " + filled.gap
+            + " ms) against the " + K + "-socket list (" + lists[li].note + ")");
+          return filled.parsed;
+        }
       }
     }
     if (frame.length > SYM.bestStream) {
@@ -2416,14 +2867,18 @@
       // Against the count the sender actually fired, so a failing run says whether
       // the frame was read short (a pulse never arrived), long (stray arrivals) or
       // complete but misordered - three different defects.
-      var need = Math.ceil(PAYLOAD_BITS / perPulse);
+      var need = baseKNeed(lists[0].cols.length);
       var sent = need * (SYM.copies || FRAME_COPIES);
-      logThrottled("sym", "read " + frame.length + " arrival(s) after the sweep, no"
-        + " payload yet (announced list: " + cols.length + " socket(s), " + perPulse
-        + " bit(s) per pulse, " + need + " pulse(s) per copy x " + (SYM.copies || FRAME_COPIES)
-        + " = " + sent + " sent: " + (frame.length === sent ? "all accounted for"
+      logThrottled("sym", "read " + frame.length + " arrival(s), no payload yet; best"
+        + " candidate: " + lists[0].note + " = "
+        + lists[0].cols.length + " socket(s), "
+        + (Math.round(Math.log(lists[0].cols.length) / Math.LN2 * 100) / 100)
+        + " bit(s) per pulse, " + need + " pulse(s) per copy x "
+        + (SYM.copies || FRAME_COPIES) + " = " + sent + " sent: "
+        + (frame.length === sent ? "all accounted for"
           : (frame.length > sent ? frame.length - sent + " extra arrival(s)"
-            : sent - frame.length + " pulse(s) never arrived")) + ")");
+            : sent - frame.length + " pulse(s) never arrived"))
+        + ")", 3000);
     }
     return null;
   }
@@ -2858,14 +3313,28 @@
         + " vs peer " + peerMin + ")");
     }
     labelled.then(function () {
-
       return stagger;
-    }).then(transmitSocket).then(function () {
-      // The socket channel's frame is finite: wait for the frame plus the settle
-      // time.  The legacy carrier keeps the old 120 s budget because its copies
-      // take ~30 s each.
-      var budget = SYM.frameMs ? Math.max(15000, SYM.frameMs) : EXCHANGE_BUDGET_MS;
-      return waitForPayload(budget);
+    }).then(function () {
+      // The peer's frame and ours are in flight at the same time, so the read starts
+      // with the transmission instead of after it.  Waiting for our own two copies to
+      // finish before looking at the peer's costs the link the *sum* of the two
+      // frames rather than the longer of them, and it is what the passing runs of the
+      // two-copy design paid: on the shipped artifact both sides' copies were complete
+      // at +155 s and +158 s, and the side that had a decodable payload in hand logged
+      // its decode only at +155 s - when its own transmission finished.  The read is
+      // the one that can end the attempt early, so it is the one that is raced.
+      var read = waitForPayload(exchangeBudget());
+      var sent = transmitSocket();
+      // Only a *payload* ends the attempt early.  A read that ran out of budget while
+      // this side is still transmitting is not an answer, and taking it as one starts
+      // the next attempt on top of a running frame (measured: two transmissions at
+      // once, a copy logged as "-67 of 67 pulse(s)", and both sides reading nothing).
+      return Promise.race([
+        read.then(function (parsed) {
+          return parsed ? parsed : sent.then(function () { return read; });
+        }),
+        sent.then(function () { return read; })        // ours ended first: read on
+      ]);
     }).then(function (parsed) {
       if (parsed) return beginHandshake(parsed);
       if (state === "connected" || !running || exchange.done) return null;
@@ -2882,6 +3351,19 @@
       log("error", "exchange: " + String(err && err.message ? err.message : err));
       exchange.active = false;
     });
+  }
+
+  // What one read is given: our own frame's length with a quarter of slack.  Both
+  // sides code the same payload over their own view of the other's sockets, so the
+  // peer's frame is about this long, and it has to be long enough for the read to
+  // outlive it on a loaded page - never less than the carrier's old budget.
+  function exchangeBudget() {
+    var K = SYM.cols.length;
+    if (K < 2) return EXCHANGE_BUDGET_MS;
+    var n = baseKNeed(K);
+    var est = ANNOUNCE_ROUNDS * (K * ANNOUNCE_GAP_MS + ANNOUNCE_SILENCE_MS)
+      + FRAME_COPIES * n * pulseGapMs() + (FRAME_COPIES - 1) * COPIES_GAP_MS;
+    return Math.max(EXCHANGE_BUDGET_MS, Math.round(est * 1.25));
   }
 
   function waitForPayload(budgetMs) {
@@ -3095,13 +3577,14 @@
         });
       })();
     }).then(function () {
-      // The socket channel's alphabet: the peer's sockets, sorted (probePeerPorts
-      // sorts), which is the same list the peer derives from gridSockets().  Only
-      // a power-of-two prefix of it can be numbered - the symbols index the list -
+      // The socket channel's alphabet is the *whole* settled readback, sorted
+      // (probePeerPorts sorts), which is the same list the peer derives from
+      // gridSockets().  The frame codes the payload in base K, so every socket
+      // carries a digit and none of the list is thrown away (see payloadToDigits),
       // and this exact list is what the peer is told by the sweep before every
       // frame, so the two sides never work from different lists.
-      var pbits = symPerPulse(peerTargets.length);
-      SYM.cols = pbits ? peerTargets.slice(0, 1 << pbits) : [];
+      SYM.cols = peerTargets.length >= 2 && peerTargets.length <= 64
+        ? peerTargets.slice() : [];
       if (peerTargets.length < 2) log("ports", "only " + peerTargets.length
         + " peer socket(s); the socket channel needs at least two");
       releaseProbes();
@@ -3110,12 +3593,15 @@
         // keeps only its readers.  That is what makes the read cheap - the pool
         // is what the old grid needed to pay for its pulses.
         log("census", "socket channel ready: " + gridSockets().length + " own socket(s), "
-          + SYM.cols.length + " peer socket(s), " + symPerPulse(SYM.cols.length)
-          + " bit(s) per pulse; no source pool (" + sources.length + " connection(s) released)");
+          + SYM.cols.length + " peer socket(s), base " + SYM.cols.length + " = "
+          + (Math.round(Math.log(SYM.cols.length) / Math.LN2 * 100) / 100)
+          + " bit(s) per pulse, " + baseKNeed(SYM.cols.length)
+          + " pulse(s) per copy; no source pool (" + sources.length
+          + " connection(s) released)");
         sources.forEach(closePc);
         sources = [];
         pulsePool = [];
-        exchangeRounds = Math.ceil(PAYLOAD_BITS / symPerPulse(SYM.cols.length));
+        exchangeRounds = baseKNeed(SYM.cols.length);
         exchangeCopies = 1;
         ready = true;
         return null;
@@ -3145,20 +3631,37 @@
     });
   }
 
+  // The name is what the peer lists show and one field of the payload, so it is
+  // adopted whenever the game learns it - see start, which is usually called at an
+  // engine that the page already started by itself.
+  function adoptName(name) {
+    var next = String(name).slice(0, 24);
+    if (!next || next === selfName) return;
+    selfName = next;
+    log("boot", "name is now " + selfName);
+    startFallbackClock();
+  }
+
   function start(options) {
     if (options && options.socket === false) useSocketChannel = false;
     else if (options && options.socket === true) useSocketChannel = true;
-    if (running) return Promise.resolve(state);
     var opts = options || {};
+    // The engine starts by itself when the page opens (see bootAutoStart), so the
+    // game's own start() normally arrives at an engine that is already
+    // discovering.  That is not a no-op: the name is the one thing the sleeping
+    // page cannot know, and it is carried in the payload - so it is taken and the
+    // discovery keeps running, instead of the call being ignored and every peer
+    // announcing the placeholder name.
+    if (running) {
+      if (opts.name) adoptName(opts.name);
+      return Promise.resolve(state);
+    }
     if (opts.name) selfName = String(opts.name).slice(0, 24);
     if (opts.stun) stunServers = opts.stun;
     running = true;
     startedAt = now();
     state = "listening";
-    if (!codeMode) {
-      clearFallbackTimer();
-      fallbackTimer = window.setTimeout(maybeFallback, FALLBACK_AFTER_MS);
-    }
+    if (!codeMode) startFallbackClock();
     log("boot", "peer id " + selfId + " (" + selfName + ")"
       + (codeMode ? " [code mode]" : " [shared credentials (AC24)]"));
 
@@ -3346,8 +3849,16 @@
       },
       buildPayload: function () { return buildPayload(); },
       parsePayload: function (bits) { return parsePayload(bits); },
-      symbolAt: symbolAt,
+      baseKNeed: baseKNeed,
+      payloadToDigits: payloadToDigits,
+      digitsToBits: digitsToBits,
       decodeStream: decodeStream,
+      decodeSlotted: decodeSlotted,
+      slotDigits: slotDigits,
+      decodeSlottedPair: decodeSlottedPair,
+      resetDecodeBudget: function () { decodeOpsLeft = DECODE_READ_BUDGET; },
+      holesAllowed: holesAllowed,
+      readColumnSweep: readColumnSweep,
       ownSocketAlphabet: ownSocketAlphabet,
       symPerPulse: symPerPulse,
       setReaders: function (wins) {
@@ -3363,4 +3874,29 @@
     }
   };
   window.__eaglerAC = AC;
+
+  // The page opens into discovery.  This module used to sit idle until a player
+  // opened a multiplayer screen, which spends the first minute of every session on
+  // work that has nothing to do with the game: the reader pool, the address scan
+  // and the column sweep are all done - or nearly done - while the title screen is
+  // still up, so opening the peers screen shows peers instead of a spinner, and two
+  // players who open the page at the same time never wait for each other at all.
+  // It starts on DOMContentLoaded so it never competes with the wasm's own first
+  // bytes, and it is the module's own start: the game's later call only supplies
+  // the name (see start).  A page that means to drive the engine itself sets
+  // window.__acNoBootStart before this script is evaluated.
+  function bootAutoStart() {
+    if (window.__acNoBootStart || running) return;
+    start({});
+  }
+  try {
+    if (typeof document !== "undefined" && document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", bootAutoStart);
+    } else if (typeof document !== "undefined" && typeof window.setTimeout === "function") {
+      window.setTimeout(bootAutoStart, 0);
+    }
+  } catch (e) {
+    // A host with no document (the decode harness, a worker) drives the engine
+    // itself through window.__eaglerAC.start.
+  }
 })();

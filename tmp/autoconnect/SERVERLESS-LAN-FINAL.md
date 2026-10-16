@@ -6,6 +6,19 @@ direct data channel. This is the pass that took that path from "never gets past
 discovery" to a working handshake, and this document is the record of what was
 measured, what was fixed, and what is still not reliable.
 
+**The lever of this pass: nothing proceeds on a list that was not confirmed.** Two
+failures of the previous pass were the same defect in two places - a side acting on
+a list it had only partly read.  The sweep fires every column three times, so the
+column list is now checked against its own repeats and offered as *candidates* that
+the CRC chooses between, which turns a partial read into a retry instead of a wrong
+alphabet (item 21); and the probe readback is no longer called settled while it is
+below the width a frame wants, because every check is already in flight and waiting
+costs no connections (item 22).  The frame itself now codes the payload in base K
+over the *whole* settled list rather than a power-of-two prefix of it (item 23) -
+seven sockets is a 120-pulse copy instead of 160 - and its checksum is CRC-32, since
+a 16-bit one accepts a wrong fill of a damaged copy about once in three tries
+(item 24).
+
 **What made the CRC match: the alphabet is sent, not estimated.** A pulse's symbol
 is *which of the peer's sockets* it lands on, so both sides have to number the same
 list of sockets the same way, and until this pass each side derived that list on its
@@ -42,10 +55,10 @@ Engine under test: [`project/target_teavm_wasm_gc/src/web/autoconnect.js`](../ta
 | readers | each page opens `READER_TARGET` connections whose UDP sockets land by lottery inside a shared 512-port window (50000-50511). Those sockets are its "grid" and its identity on the wire. |
 | discovery | a sweep fires checks at every host in the local `/24`s × the window ports, then reads back which pairs succeeded (a peer's reader sockets answer). If a peer is probing *us* first, its source port identifies it and a locate readback finds its address. |
 | census | each reader fires one check at a throwaway port of the peer's address; reading back which of its own sockets carried it labels the socket (16/16 in every run since the fix). |
-| probe | the page fires one check at each of the peer's 512 window ports and reads back which answered. Everything this page owns that is not a reader is forced out of the window, and the reader sockets are re-read just before the probe, so an in-window port that answers is a reader socket. |
-| columns | the list a frame is aimed at is the power-of-two prefix of that candidate list, and it is **transmitted** before the frame: one pulse per column, ascending, three rounds, with a silence between the rounds that no frame pulse can produce. This is what makes the CRC match: the receiver reads the *port numbers* off the arrivals - which needs no alphabet of its own - and both sides then number the same sockets in the same order. |
-| frame | the payload (magic, 16-bit id, 32-byte DTLS fingerprint, final port, CRC16 = 320 bits) is sent as a train of pulses, one per fresh connection, each aimed at the column whose index is the symbol being sent. |
-| decode | the peer reads its readers' stats: every arrival names the socket it landed on (the symbol). The stream is ordered by the *read* time (Chrome's per-pair receipt stamps are not monotonic), and the payload is found by content with the CRC as the only judge - contiguous first, then allowing stray arrivals to be skipped, then as a *slotted* read in which a gap of twice the measured cadence is a hole whose missing symbol the CRC picks. |
+| probe | the page fires one check at each of the peer's 512 window ports and reads back which answered, polling until the list stops growing *and* is at least `PROBE_TARGET_COLUMNS` wide (a short readback is not settled, it is a longer frame - item 22). Everything this page owns that is not a reader is forced out of the window, and the reader sockets are re-read just before the probe, so an in-window port that answers is a reader socket. |
+| columns | the list a frame is aimed at is **transmitted** before the frame: one pulse per column, ascending, three rounds, with a silence between the rounds that no frame pulse can produce. The receiver reads the *port numbers* off the arrivals - which needs no alphabet of its own - and then confirms the list against those three repeats, offering the confirmed candidate lists (and the raw run of first appearances) to the decoder to pick between (item 21). |
+| frame | the payload (magic, 16-bit id, 32-byte DTLS fingerprint, final port, CRC-32 = 336 bits) is sent as a train of pulses, one per fresh connection, each aimed at the column whose index is the digit being sent: one integer in base K, most significant digit first, over the whole settled list (item 23). |
+| decode | the peer reads its readers' stats: every arrival names the socket it landed on (the digit). The stream is ordered by the *read* time (Chrome's per-pair receipt stamps are not monotonic), and the payload is found by content with a CRC-32 as the only judge - contiguous first, then allowing stray arrivals to be skipped, then as a *slotted* read in which a gap of twice the measured cadence is a hole whose missing digit the CRC-32 picks (items 23, 24). |
 | handshake | the decoded payload carries the peer's final-connection port and DTLS fingerprint; both sides apply it, poke each other's final socket and open the data channel. DTLS roles are split by the (now numeric) peer id. |
 
 ## 2. Defects found and fixed in this pass
@@ -249,9 +262,118 @@ that identified it; the fixes are in the engine file above.
     each as its own frame, and `DECODE_HOLES` is 5 - safe to raise because
     `parsePayload` now rejects a port inside the reader window, which the final
     connection never has, dropping the false-candidate rate from one in two to about
-    one in a thousand.
+    one in a thousand.  (That estimate is wrong by a factor of five hundred and is
+    corrected in item 24: a 16-bit checksum accepts a wrong 32768-candidate fill
+    about half the time.)
+
+21. **A partial sweep read was accepted as an alphabet, and it is a shorter power of
+    two.** The reader took the longest ascending run of *first appearances* as the
+    list, and a run that lost one of its entries is still ascending - it is just
+    shorter, and 4 is as plausible a length as 8.  Measured on the shipped artifact:
+    one side read `peer column list: 4 socket(s) from 1 round(s) of 4 pulse(s)`
+    while the sender announced eight, so it decoded a frame it had 234 of 320
+    arrivals of against a four-socket index space and never matched the CRC.  The
+    sweep fires every column three times, so the list can be checked against its own
+    repeats: `readColumnSweep` now returns *candidate* lists - the sockets the
+    repeats confirm (seen at least twice), every socket seen twice, then the
+    ascending run of first appearances - and every candidate whose columns are not
+    ours is dropped.  The decoder tries each against each burst and the CRC picks,
+    so a partial read is a candidate that simply fails to decode, which is a retry
+    on the next poll instead of a wrong alphabet held for the whole attempt.  The
+    test file's last checks pin both halves of this: a full sweep yields the eight
+    sockets, a one-round partial read of the same sweep still offers eight first,
+    and the four-socket run on its own would not have decoded the frame.
+22. **A short probe readback was called settled.** The readback stopped after
+    `PROBE_STALL_ROUNDS` (3) rounds with no new socket whatever its size, so a page
+    whose peer's readers were late settled on four sockets - and the list's size is
+    the frame's length: four sockets is a 160-pulse copy at two bits per pulse,
+    measured at 248 of 320 arrivals, past any hole-filling.  Every check was fired
+    before the polling started and ICE paces its queued checks for up to a minute
+    (item 6 measured probe arrivals 66 s after the probe), so waiting longer costs
+    time and no connections.  The readback is now aimed at `PROBE_TARGET_COLUMNS`
+    (8): it keeps polling while it is below that, settles early only once it is wide
+    enough, and reports the deadline case explicitly.  The acceptance run read back
+    eight sockets on both sides and the frame was 112 pulses.
+23. **Base K, not a power-of-two prefix: every settled socket carries a digit.** The
+    frame was aimed at a power-of-two *prefix* of the peer's list (8 of 12 sockets,
+    3 bits per pulse), so a third of the alphabet was thrown away and the frame grew
+    exactly when the readback was short - seven sockets read back is a 160-pulse
+    copy at two bits and a 120-pulse copy in base 7.  The payload is now one integer
+    in base K over the *whole* settled list, most significant digit first, padded to
+    `baseKNeed(K) = ceil(log_K(2^320))` digits.  Measured pulse counts per copy
+    (`tmp/autoconnect/test-decode.mjs`): K = 7 -> 120, 8 -> 112, 12 -> 94, 16 -> 84,
+    20 -> 78, against 160 at two bits - and every one round-trips exactly through the
+    decoder.  The hole search enumerates K^holes digit combinations, so its allowance
+    moves with the alphabet (`holesAllowed`: 5 holes at K <= 8, 4 at K <= 11, 3 at
+    K <= 16) and every candidate is charged to a per-read decode budget
+    (`DECODE_READ_BUDGET`), because it is the only unbounded work the decoder does.
+24. **CRC-16 accepted a *wrong* payload whenever the hole search ran long, and the
+    test found it on the first run.** The hole search is the only judge of a frame
+    that arrived short, and a 16-bit checksum accepts a wrong candidate once in
+    65536 tries - so a base-12 copy with four holes (20736 candidates) came back
+    with a payload whose 32 fingerprint bytes were another fingerprint's, and the
+    engine then dials a socket with the wrong fingerprint and burns the attempt.
+    The magic bytes cannot help: the holes sit behind them, so every candidate
+    carries the same magic.  Measured: `a base-12 copy with four holes` returned a
+    different fingerprint at candidate 8466 of 20736 (a 13% chance *per such copy*,
+    and up to 50% for the 5-hole, 32768-candidate search item 20 was happy with).
+    The payload's checksum is now CRC-32 (IEEE), so the payload is 42 bytes = 336
+    bits and a wrong fill needs 2^32 candidates; the frame is 6 pulses longer in
+    base 8 (112) and 4 in base 12 (94) than the CRC-16 frame, which is a fraction of
+    what item 23 won back.
+25. **A column the receiver could not observe was filtered out by its own stale window
+    set, and the loop was closed.** The third run of this pass failed with `peer
+    column list: 9 socket(s) ... 221 arrival(s)` against a peer that had announced
+    twelve, and it could not recover on attempt 2 either.  The peer's list was not
+    wrong: a reader connection can gain a second in-window socket *after* the page
+    last registered its own sockets, so the peer's probe read back a socket of this
+    page's that this page did not have in `ownWindowPorts` - and the arrival filter
+    (item 19) threw away every arrival on a socket that was in neither
+    `ownWindowPorts` nor the *first* candidate list.  Those arrivals were the
+    repeats that would have put that socket into a candidate at all, so the list
+    could never be completed: the page read 221 of the frame's 212 arrivals and
+    decoded nothing, twice in a row.  Two fixes, both in the socket channel: an
+    arrival on **any** of this page's in-window sockets is a column (a reader only
+    ever reports its own sockets, so the window is the whole rule and the stale
+    registration no longer decides), and `SYM.peerCols` is the union of *every*
+    candidate's sockets rather than the first candidate's, so a socket that only the
+    second candidate names is still allowed to gather the repeats that would move it
+    into the first.
+26. **A socket that had already gone away still answered the probe, and its port made
+    the announced list undecodable for the peer.** The readback is a snapshot of the
+    peer's address taken once; a socket that is on its way out - a lottery connection
+    that was not kept, answering in its last moment - is in that snapshot and then
+    never receives a pulse again.  The announcing side is fine, the receiving side is
+    not: it can derive every column but that one, so its list is a member short and
+    its base is wrong, and it reads a *complete* frame and decodes nothing.  Measured
+    on the shipped artifact: a readback of eight sockets of which one was a socket
+    that had died before the frame (`peer socket probe answered with 8 socket(s)`
+    including a port that is in neither page's registered window), and the far side
+    logging `peer column list: 7 socket(s)` against an announced eight while reading
+    all 240 arrivals of the frame, twice in a row.  The obvious fix - *confirm* the
+    readback by re-firing one check per candidate from fresh out-of-window connections
+    and dropping the ports that do not answer a second time - was implemented, run
+    three times, and reverted: it does catch a dead port, but in the next run the
+    readback was *exact* (11 sockets for a peer with 11, 12 for a peer with 12) and
+    the confirmation still dropped four live reader sockets after 15 s of polling,
+    which turns a 94-pulse frame into a 120-pulse one - a worse trade than the rare
+    dead port it removes.  "Did this socket answer a second time" is not a reliable
+    question on this host: ICE paces the checks a connection carries, and a live
+    socket whose answer is merely late is indistinguishable from one that has gone.
+    What remains is a one-host artifact by construction - two machines cannot have a
+    third ICE agent on the peer's address to answer the probe at all (see section 5,
+    item 4 of the next-work list) - and this pass does not claim to have closed it.
 
 ## 3. How to reproduce
+
+Decoder unit test (no browser, no WebRTC: the engine's own encoder and decoder under
+Node, through the `_debug` seam - base-K round trips, the hole search, and the sweep
+reader against a partial read; it is what found item 24):
+
+```bash
+cd ~/eagle/project
+node tmp/autoconnect/test-decode.mjs
+```
 
 Engine-level harness (two Chromium processes, two engine pages, no discovery
 server - `peer.html` loads `autoconnect.js` directly):
@@ -353,7 +475,144 @@ short, long or complete), then `sym: payload decoded ...` - possibly `by filling
 hole(s)` - and `final: DTLS client/server - peer port P`, `final: connection state
 connected`, `connect: connected over a direct data channel`.
 
-## 4. State: what is verified, what is still flaky
+## 4. This pass: a shorter frame, the two copies merged, the strays named, discovery from page open
+
+The carrier the acceptance above scored connects in ~2-3 minutes when it connects at
+all, and the failure it kept producing was not a lost pulse but a *side*: one peer
+decodes and dials, the other never reads the payload, and the dial has no
+counterpart. This pass attacked that one failure and the clock together.
+
+**1. The two copies are merged, not just repeated** (`decodeSlottedPair`). A read that
+holds both copies of a frame is an erasure code: each copy's holes are filled from the
+other, a slot the two disagree on is left to the CRC, and only a slot neither carried
+is unknown - enumerated with a bounded candidate budget and the same big-integer
+arithmetic the hole search uses. This is the read both failing runs of the previous
+pass needed. Measured with the codec harness (`node tmp/autoconnect/test-decode.mjs`),
+per-pulse loss of a 112-pulse copy:
+
+```
+K=8:  5.0% loss   94% decoded with the merge   58% without
+K=12: 5.0% loss   90% decoded with the merge   45% without
+```
+
+Two copies that lost six pulses each decode on the first candidate of the merge, and
+when either copy loses nothing.
+
+**2. The frame's clock came down from 600 ms to 450 ms** (`SYM_PULSE_GAP_MS`). The gap
+only has to clear the reader's own read cadence (a reader round over twelve readers is
+250-400 ms; the floor was twice that), and 450 stays above `PULSE_DUP_MS`, the window
+that folds a pulse's two arrivals into one symbol. Measured on the shipped artifact:
+a 94-pulse copy now takes 42.9-43.0 s and a 106-pulse copy 48.5 s, against 67.9 s and
+79.0 s for the same copies at 600 ms, with the receiver's cadence measured at 457 ms.
+
+**3. The readback keeps one shot per port, and the stop rule around it changed.**
+Firing every port twice (from a different scanner, so the second check is not a no-op)
+was implemented to widen a short readback - the list's length *is* the frame's length,
+six sockets being a 130-pulse copy where twelve is 94 - and the lever is back at one
+shot. The measurement is not clean enough to blame the second shot: the run that had it
+read **32 sockets for a peer that owns 14** (20 columns unreachable, 55 of 148 pulses
+lost, no decode), and a later run of the *one-shot* build read 33 and 37 for a peer
+that owns 9. What decides this number is the host, not the shot count, and one shot is
+the configuration in which the carrier has ever decoded a frame. What does stay is the
+stop rule: a settled readback below the target is taken at `PROBE_SETTLE_MIN_MS` (12 s)
+instead of polling to a 45 s deadline for a socket that never came (the previous pass
+spent 33 s that way to shorten the frame by ~16 s), and a readback below four sockets
+is probed again (`PROBE_WAVES`).
+
+**4. The sweep's pulses leave from our own reader sockets** (`listPulse`), and the
+frame's read drops arrivals whose source is in the reader window. The sweep and the
+frame are the same mechanism, so nothing about an arrival said which of the two sent
+it, and the peer's sweep lands inside the receiver's frame: measured on the shipped
+artifact, 48 arrivals over a 188-pulse frame, **24 of them the peer's sweep**, read
+against an alphabet that was exactly right, and no decode. The socket class is what
+the sender controls - a list pulse now leaves from a reader, in the window by
+construction, and a frame pulse from whatever ephemeral socket the OS hands a fresh
+connection, out of the window about 97 times in a hundred - so the frame's read keeps
+only the out-of-window sources. It costs no connections (the sweep used to spend one
+per pulse) and the price is the ~3% of frame pulses whose own socket lands in the
+window. A round-robin stride over the readers keeps every (socket, target) pair
+distinct, because the same pair fired twice is silently a no-op (see `fire`).
+The sweep and the frame are the same mechanism - a fresh connection fired at a column -
+so nothing about an arrival said which one sent it, and the peer's sweep lands *inside*
+the receiver's frame: measured on the shipped artifact, 48 arrivals over a 188-pulse
+frame, 24 of them the peer's sweep, against an alphabet that was exactly right, and no
+decode. The socket class is what the sender controls; it also stops a list pulse from
+answering the peer's probe as a phantom column. The price is the ~3% of frame pulses
+whose own socket lands in the window, which the merge and the slot read absorb.
+
+**5. The read runs *while* the side transmits** (`Promise.race` in `maybeExchange`,
+`exchangeBudget`). Waiting for our own two copies to finish before looking at the
+peer's costs the link the sum of both frames: measured, both sides' copies were
+complete at +155 s and +158 s and the side that held a decodable payload logged its
+decode at +155 s, i.e. when its own transmission ended. The read is now started with
+the transmission and raced against it, so the link forms when the *first* side has the
+peer's payload.
+
+**6. The engine discovers from the moment the page opens** (`bootAutoStart`). It used
+to sit idle until a multiplayer screen was opened, which spends the first minute of a
+session on the reader pool, the address scan and the sweep - all of it before anybody
+clicks anything. Measured on the shipped artifact: the engine boots at +0 ms on page
+load, has its twelve readers at +2.6 s and its scanners at +2.8 s. The code tier's
+budget still starts when the *game* names the player (`startFallbackClock`), so a page
+that has only been opened never raises a code prompt at the title screen.
+
+The sweep itself was trimmed with it (`ANNOUNCE_GAP_MS` 400 -> 300,
+`ANNOUNCE_SILENCE_MS` 2800 -> 2000): 16.8 s for a 12-column sweep against 22.8 s. The
+gaps stay inside `PULSE_DUP_MS`'s rule and below `ANNOUNCE_SPLIT_MS`, so a round is
+still one burst.
+
+**Iterations measured and reverted in this pass** (each one is a shipped-artifact run,
+not a harness run):
+
+| lever | measurement | decision |
+| --- | --- | --- |
+| two shots per probe port (`PROBE_SHOTS = 2`) | readback 9 and 12 in the run that decoded, but **32 sockets for a peer that owns 14** in another, 20 columns unreachable, 55 of 148 pulses lost | back to one shot: the known-good configuration, not a proven cause |
+| sweep pulses from a batch-verified out-of-window pool (`buildListPool`) | behaves, but creates and closes `cols x 3` (99-111) connections per sweep, and the attempt after it read 33-37 sockets for a peer with 9 | replaced by reader-fired list pulses, which cost no connections |
+| the concurrent read taking a `null` read as an answer | two transmissions at once (`frame copy 2 of 2: -67 of 67 pulse(s)`), both sides reading nothing | the race now only ends the attempt on a *payload* |
+
+**The acceptance runs of this pass** - the same acceptance as above (two stock Chrome
+windows, the shipped single-file client, plain static HTTP from the LAN address, no
+flags, no discovery server, scored on a message crossing), all on one host, with the
+host's own load recorded because that is what the numbers are a measurement of:
+
+| run | carrier | readback | frame | outcome |
+| --- | --- | --- | --- | --- |
+| 1 (`artifactruns6-run-1`, load 6.9-9.2) | merge + 450 ms gap + self-start | 9 and 12 of 12 | 106 and 94 pulses per copy, **42.9 s** and **48.5 s** each | bob decoded alice's frame (`filling 4 hole(s) ... cadence measured at 457 ms`) and dialled her final port; alice never decoded (correct 12-socket alphabet, 236 arrivals for 188 sent, 24 of the extra the peer's sweep); `the final connection did not come up`; **NOT connected** |
+| 2 (`artifactruns7-run-1`, load 10.6-12.2) | + sweep fired from a verified out-of-window pool | 32 and 23 for peers owning 14 and 12 | base 45 and 24 | 55 of 148 pulses never arrived; **NOT connected** |
+| 3 (`artifactruns8-run-1`, load 13.7-18.2) | one shot per port again | 33 and 37 for peers owning 9 and 9 | 1-2 arrivals of 260 and 240 | **NOT connected** |
+| 4 (`artifactruns9-run-1`, load 13.7 -> 43.8 -> **119**) | + sweep fired from the readers + the race fix | 45 and 23 | 22 kept of 150 sent | **NOT connected** |
+
+So this pass ends with **no passing acceptance run**, and the runs say why in one
+number: the readback. A list of 32-45 sockets for a peer that owns 9-14 means most of
+the frame's columns are sockets nothing can land on, and no decoder can read a frame
+aimed at them. That number was 6-12 in every run of the previous pass and in the first
+run here (the one that decoded), and it is the *least* controlled quantity in the
+engine on a single host: the peer's address is the machine's own, so any local socket
+bound there answers a check and is read back as a column (item 26 of the findings) -
+with both pages competing for the same ephemeral port range, the count follows the
+host's connection churn, not the engine. Two machines remove the whole class, and that
+is the deployment case; it is also why this pass's numbers cannot be read as the
+carrier's reliability, only as this host's.
+
+The four runs do establish, per-run, what they were run for: the frame is 42.9-48.5 s
+per copy instead of 67.9-79.0 s for the same copy lengths, the discovery starts at page
+load (readers at +2.6 s), the readback stops at 12 s instead of 45 s when it has
+settled short, and the two-copy merge decodes on the codec harness where the single
+copy cannot.
+
+**Readback size is what decides a run.** The list's length is the frame's length and
+the frame's length is the loss budget, but on one host the readback is also the least
+reliable quantity in the engine: the peer's address is the machine's own, so *any*
+local socket bound there answers a check, and a readback of 6, 12, 32 or 37 sockets is
+the difference between a 94-pulse frame and one that cannot land at all. Two machines
+remove that whole class (nothing but the peer can answer), which is why the deployment
+case is a *stricter* test of the engine and the easier one for this number.
+
+**Still one host.** Every run below has both peers in one browser process family on one
+machine, because that is the only pair available here. Nothing in this pass was
+verified on a second device.
+
+## 5. State: what is verified, what is still flaky
 
 **The runs of this pass**, three consecutive unattended runs of the shipped
 `dist/direct-connect.html` in two stock Chrome windows over plain static HTTP from

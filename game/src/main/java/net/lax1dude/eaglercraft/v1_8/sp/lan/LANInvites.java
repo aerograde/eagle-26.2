@@ -215,7 +215,7 @@ public final class LANInvites {
 			return;
 		}
 		if(autoConnect) {
-			ensureAutoConnectStarted(minecraft.gui.screen());
+			ensureAutoConnectStarted();
 		}
 		refreshPeers();
 		if(discovery) {
@@ -230,16 +230,16 @@ public final class LANInvites {
 	}
 
 	/**
-	 * The plan's first tier is meant to need no clicks. The pool it builds spends
-	 * most of the page's lifetime WebRTC connection budget, so it starts when the
-	 * player is actually looking for players - the online list, the host room or
-	 * the code screen - instead of at boot. The code fallback starts it explicitly.
+	 * The plan's first tier is meant to need no clicks, and the module now starts
+	 * itself the moment the page opens (see {@code bootAutoStart} in
+	 * autoconnect.js), so discovery is already running - the reader pool, the
+	 * address scan and the column sweep are done before a screen is even open.
+	 * What is left for this call is the one thing the page cannot know at load: the
+	 * player's name, which the payload carries. The module adopts it and keeps
+	 * discovering, and the call is free to repeat.
 	 */
-	private static void ensureAutoConnectStarted(Screen current) {
-		if(current instanceof EaglerLANPeersScreen || current instanceof EaglerDirectConnectHostScreen
-				|| current instanceof EaglerAutoConnectCodeScreen) {
-			AutoConnect.start(localName());
-		}
+	private static void ensureAutoConnectStarted() {
+		AutoConnect.start(localName());
 	}
 
 	/**
@@ -255,7 +255,11 @@ public final class LANInvites {
 			return;
 		}
 		Screen current = minecraft.gui.screen();
-		if(current instanceof TitleScreen || current instanceof EaglerLANPeersScreen) {
+		// Only where the player has shown they are looking for a peer. The module
+		// discovers from page load and runs its code fallback from the moment this
+		// class names the player, so keeping the title screen here would greet
+		// somebody who is still reading their options with a code screen.
+		if(current instanceof EaglerLANPeersScreen || current instanceof EaglerDirectConnectHostScreen) {
 			autoConnectPrompted = true;
 			minecraft.gui.setScreen(new EaglerAutoConnectCodeScreen(current));
 		}

@@ -23,35 +23,39 @@ ls -la dist/direct-connect.html
 
 echo "== commit =="
 git add target_teavm_wasm_gc/src/web/autoconnect.js tmp/autoconnect/SERVERLESS-LAN-FINAL.md \
-        tmp/autoconnect/analyse-sweep.py tmp/autoconnect/ship.sh dist/direct-connect.html
+        tmp/autoconnect/analyse-sweep.py tmp/autoconnect/ship.sh tmp/autoconnect/test-decode.mjs \
+        tmp/autoconnect/artifact-runs.sh dist/direct-connect.html \
+        game/src/main/java/net/lax1dude/eaglercraft/v1_8/sp/lan/LANInvites.java
 git commit -m "$(cat <<'MSG'
-Send the payload twice per attempt, read the column list by first appearance
+Shorter frame, the two copies merged, strays named, discovery from page load
 
-One frame per attempt is a coin toss: a single hole or stray arrival costs the whole
-read, and the failure is silent. The payload is now sent twice inside one attempt,
-with a silence longer than any gap inside a copy between the copies, so each copy is
-read as its own burst and decoded on its own - contiguously, then allowing stray
-arrivals, then as a slotted read that fills up to five holes. The reader lottery was
-cut from sixteen readers to twelve to pay for the second copy out of Chrome's
-no-refund 500-connection lifetime cap.
+The two copies of a frame are now read as one erasure code instead of two chances:
+each copy's holes are filled from the other, a slot the two disagree on is left to
+the CRC, and only a slot neither carried is enumerated. Measured on the engine's own
+codec (tmp/autoconnect/test-decode.mjs, which also gains the checks for it), at a 5%
+per-pulse loss a 112-pulse copy decodes 94% of the time against 58% for the copies
+read one at a time.
 
-The column sweep is now read as first appearances rather than as ascending bursts:
-the order in which the columns appear for the first time is the ascending list
-whatever the reads did to the bursts, and a busy page's stats queue was merging three
-rounds of four pulses into one burst of twelve that does not ascend - which left the
-reader with no alphabet at all and made a received frame undecodable. Arrivals are
-filtered by destination socket as well as by source-port multi-fire, and the payload
-parser rejects a port inside the reader window, which keeps a five-hole search from
-accepting a wrong candidate.
+The frame's own clock came down from 600 ms to 450 ms per pulse - measured on the
+shipped artifact as 42.9 s and 48.5 s per copy for 94 and 106 pulses, against 67.9 s
+and 79.0 s for the same copies before - and the read now runs while the side
+transmits instead of after it, so the link forms when the first side has the peer's
+payload rather than when the slower side finishes sending its own two copies.
 
-A pooled carrier - one long-lived connection carrying a whole pass over the column
-list - was implemented and measured, then reverted: it delivered every pulse in the
-idle engine harness (160 of 160, 107 of 107) and lost about half of them in the real
-single-file client, and it is recorded as item 17 of the findings.
+The sweep's pulses leave from our reader sockets, so an arrival's source socket says
+whether it belongs to the peer's list or its frame; the frame's read drops the list,
+which was 24 of the 48 extra arrivals in a frame that had the right alphabet and
+decoded nothing. The engine also starts its own discovery when the page opens (the
+reader pool, the address locate and the sweep are done before a screen is open), and
+the list the sender aims at is probed again when it comes back too short to code a
+frame in.
 
-Tested end to end on the shipped artifact in stock Chrome 154 with no feature flags
-and no discovery server: both windows reached "connected" and a message crossed, on
-copy 1, with 3 and 1 holes filled.
+This pass ends with no passing acceptance run, and the doc records the table: every
+failure is the same number, the readback (32-45 sockets read back for a peer that owns
+9-14), which on one host follows the machine's connection churn because the peer's
+address is the machine's own. The runs do establish the frame's new timing, the page-
+load start and the merge; they do not establish reliability, and the two-machine case
+is untested.
 
 🤖 Generated with Codebuff
 Co-Authored-By: Codebuff <noreply@codebuff.com>
