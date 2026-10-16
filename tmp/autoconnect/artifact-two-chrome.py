@@ -2,11 +2,15 @@
 
     python3 tmp/autoconnect/artifact-two-chrome.py [httpPort] [timeoutMs]
 
-No discovery server, no helper page and no special flags: the artifact is served
+No discovery server, no helper page and no feature flags: the artifact is served
 by any static file server, and both windows load it from the machine's LAN
-address.  The engine inside the page (window.__eaglerAC, the inlined
-autoconnect.js) is started on both windows the way the game's LAN screen starts
-it - setIdentity()/start() - and the run is scored on the engine's own state:
+address in stock Google Chrome.  `lna-probe.py` measured that the earlier
+`--disable-features=LocalNetworkAccessChecks,PrivateNetworkAccessChecks` in this
+script was not needed on Chrome 154: discovery, the census and the peer socket
+probe all ran without it.  The engine inside the page (window.__eaglerAC, the
+inlined autoconnect.js) is started on both windows the way the game's LAN screen
+starts it - setIdentity()/start() - and the run is scored on the engine's own
+state:
 
   * both windows report state "connected" (a direct data channel, no relay),
   * each window's peer list names the other by its id and address,
@@ -30,7 +34,7 @@ if not lan:
 url = "http://%s:%d/dist/direct-connect.html" % (lan, port)
 print("artifact: %s" % url, flush=True)
 
-ARGS = ["--no-first-run", "--no-default-browser-check", "--disable-features=LocalNetworkAccessChecks,PrivateNetworkAccessChecks"]
+ARGS = ["--no-first-run", "--no-default-browser-check"]  # no feature flags: see lna-probe.py
 
 
 def wait_for_engine(page, name):

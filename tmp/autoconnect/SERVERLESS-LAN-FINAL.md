@@ -83,6 +83,28 @@ that identified it; the fixes are in the engine file above.
     ~11 s while a frame takes ~64 s and the two sides decode on their own schedule:
     the side that decoded first stopped knocking before the other side could answer.
     Now it keeps poking for `FINAL_POKE_MS` (150 s) and reports a late connection.
+11. **A probe readback with nothing in it was used as an alphabet.** The probe is
+    a snapshot of which of the peer's sockets ICE has answered on *yet*, and two
+    pages opened together boot ~10 s apart, so the side that gets the peer's
+    address first can probe a peer whose readers do not exist yet. Measured in a
+    stock Chrome (no feature flags) run: one side read back 10 sockets, the other
+    0 - it seeded the one out-of-window port that had probed it (a scanner the
+    peer closes), ran its attempt at "1 column" and reported `no peer socket to
+    aim at`. Fix: seeds outside the reader window are ignored (logged), and the
+    probe is repeated every `PROBE_RETRY_GAP_MS` (6 s) while it yields fewer than
+    `PROBE_MIN_COLUMNS` (4) sockets, up to `PROBE_RETRY_MS` (60 s).
+12. **The two sides each *estimated* the alphabet, and they disagreed.** The
+    sender's alphabet is its probe readback (10 and 13 sockets in the acceptance
+    run, 3 bits per pulse); the receiver's is the sockets its readers saw pulses
+    on, filtered to the "hot" ones (hit >= max(3, 20% of the busiest)). Twenty-odd
+    strays per frame put three or more hits on sockets no pulse was ever fired at,
+    so the receiver's candidates came out at **15-17 sockets - 3 and 4 bits per
+    pulse** - against the sender's 3. That is a different index space *and* a
+    different frame length, so no CRC can match: measured on the shipped artifact
+    as `no payload yet (17-socket alphabet, 4 bit(s) per pulse)` while the peer
+    transmitted `320 bits as 107 pulse(s) x 3 bit(s)`. This is the remaining
+    structural gap (see section 5): the alphabet must stop being two independent
+    statistical estimates.
 
 ## 3. How to reproduce
 
@@ -108,7 +130,45 @@ Artifact-level acceptance test (the shipped single file, two real Chrome windows
 plain static HTTP, engine started as the LAN screen starts it):
 
 ```bash
-python3 tmp/autoconnect/artifact-two-chrome.py 8124 300000
+cd ~/eagle/project
+python3 -m http.server 8125 --bind 0.0.0.0 --directory . &
+python3 tmp/autoconnect/artifact-two-chrome.py 8125 300000
+```
+
+That script passes **no browser feature flags**. `tmp/autoconnect/lna-probe.py`
+measures whether any are needed (it boots two stock Chrome processes against the
+same static server and waits for the peer): on Chrome 154 the two engines
+discovered each other, census-labelled 16 of 16 readers and read back 10 peer
+sockets with the default command line, so the
+`--disable-features=LocalNetworkAccessChecks,PrivateNetworkAccessChecks` the
+script used to pass was unnecessary and is gone. Plain HTTP from a LAN address is
+not a secure context, and neither `fetch`/`WebSocket` nor the RTCPeerConnection
+used here is gated on a permission in that configuration.
+
+The artifact itself is packaged from the engine file with:
+
+```bash
+cd ~/eagle/project
+cp target_teavm_wasm_gc/src/web/autoconnect.js target_teavm_wasm_gc/build/web/autoconnect.js
+node wasm-toolchain/build-single-html.js --skip-build --fast-package \
+  --output dist/direct-connect.html
+```
+
+`--skip-build` is what a JavaScript-only change needs: the linker's reuse guards
+refuse `--reuse-client` while `target_teavm_wasm_gc/src` is newer than
+`classes.wasm`, and no Wasm can change because of a web/ edit. `--skip-build`
+packages the already assembled `target_teavm_wasm_gc/build/web`, which is why the
+engine is copied there first.
+
+Confirm the packaged engine is the file you edited - a byte comparison, not a
+marker grep:
+
+```bash
+cd ~/eagle/project
+node -e 'const fs=require("fs"),h=fs.readFileSync("dist/direct-connect.html","utf8"),\
+ s=fs.readFileSync("target_teavm_wasm_gc/src/web/autoconnect.js","utf8");\
+ const i=h.indexOf(s.slice(0,120)), j=h.indexOf(s.slice(s.length-120));\
+ console.log("inlined engine verbatim:", i>0 && h.slice(i,j+120)===s)'
 ```
 
 Reading the logs: `ports: peer socket probe answered with N socket(s)`,
@@ -123,43 +183,78 @@ channel`.
 
 Verified working, repeatedly, in runs of the real engine:
 
+* the whole path to the frame in **stock Chrome with no flags**, plain static HTTP
+  from the LAN address (`lna-probe.py`, two processes: discovery, census 16 of 16,
+  probe 10 peer sockets);
 * discovery with no server: sweep find, locate by source port, peer address;
 * census labelling 16/16 readers in ~2 s;
+* a clean alphabet on both sides after the seed fix: `probe answered with 10
+  socket(s)` and `... with 13 socket(s)`, the out-of-window seed logged and
+  ignored, and both sides then transmitting `320 bits as 107 pulse(s) x 3 bit(s)`
+  - before that fix the same phase produced a 2-column, 1-bit, 320-pulse alphabet
+  (a 192 s frame);
 * the probe returning the peer's socket set (15-16 of 17) instead of 0-9;
 * frames whose symbol channel is exact: `arrival port == pulse target` 10 of 10
   and symbol index == sender's symbol 10 of 10 (hot-socket alphabet);
 * arrival ordering exact (0 inversions) once the gap exceeds the reader cadence and
   arrivals are dated by the pair's receipt timestamp;
-* **a full payloak decode on both sides in the same run** (`payload decoded ... 3
-  bit(s) per pulse, 8-socket hot-socket alphabet`), with the peer's real final port
-  in the payload, which is what the fix in row 8 and 9 was measured against.
+* **a full payload decode** in the shipped artifact (`payload decoded from 107
+  arrival(s) at position0, 3 bit(s) per pulse, 8-socket hot-socket alphabet`) with
+  the peer's real final port in the payload, which is what the fixes in rows 8 and
+  9 were measured against - it is what made the decoding side take the DTLS server
+  role and dial the peer's real port.
 
-Still flaky, and the reason this is not "100%" yet:
+Still flaky, and the reason this is not "100%" yet. The last acceptance run of the
+shipped artifact (sha256 `9456b043cf1702b7d6f88d78f3a8826fd0201f3bedfe2689111f614e15718829`,
+75,872,903 bytes, built by the commands in section 3) ran in stock Chrome with no
+flags, plain static HTTP, and ended `VERDICT: NOT connected: {'alice': 'failed',
+'bob': 'failed'}`: both sides discovered, censused, probed a clean alphabet and
+transmitted full 107-pulse frames, and neither decoded. The blocker is defect 12
+above and the first item of section 5: the two sides' alphabets disagreed.
 
-* a frame's stream carries **9-27 stray single-check arrivals** the sender never
-  fired. The contiguous decoder can absorb them only when they sit at the edges of
-  the frame's block; an insertion in the middle shifts the symbol sequence and the
-  CRC then rejects an otherwise perfect read. The second, skip-tolerant pass
-  (`DECODE_SKIPS` = 3, over the first `DECODE_STARTS` positions, with an operation
-  budget) is in the engine to cover exactly that case, and it needs a run where the
-  strays are interior to be scored.
-* consequence: per-attempt success is a coin toss (one of three recent runs decoded
-  on both sides; the other two exhausted their attempts). The engine retries three
-  times per side, and both sides must succeed for a link.
+
+* a frame's stream carries **9-35 stray single-check arrivals** the sender never
+  fired, so the contiguous decoder only succeeds when they fall outside the frame's
+  span: an insertion in the middle shifts the symbol sequence and the CRC rejects
+  an otherwise perfect read. Measured on the shipped artifact, one frame, both
+  sides: 131/134/137 and 135/136/139/142 arrivals for a 107-pulse frame with no
+  decode, then - a later read of that same frame - **107 arrivals, exact**, and a
+  decode: `payload decoded from 107 arrival(s) at position0 (3 bit(s) per pulse,
+  8-socket hot-socket alphabet)`, followed by `final: DTLS server - peer port
+  51640`, the peer's real advertised port. The count *falls* over time because this
+  filter drops an arrival once its source port has fired a second time, and the
+  strays are the queued ICE checks of probe/sweep connections that Chrome had not
+  sent when the first read looked. The skip-tolerant pass (`DECODE_SKIPS` = 3 over
+  the first `DECODE_STARTS` positions, with an operation budget) covers the
+  interior case; against 20+ strays it has not been enough yet.
+* consequence: per-attempt success is a coin toss. In that same artifact run one
+  side decoded a clean frame and applied the peer's real final port, while the
+  other side ran out of attempts (attempt 1: 24-30 extra; attempt 2: 9 -> 2
+  missing as the peer finished transmitting; attempt 3: 0 arrivals at all). The
+  engine tries three times per side and both sides must succeed for a link.
 
 Where the next fix goes, in order of expected value:
 
-1. identify the strays at their source. Every arrival the sender did not fire comes
-   from a connection that fired exactly once; the probe/sweep/locate connections
-   are already filtered by repeat count, so these are new connections nothing in
-   the frame fired. Instrument the peer page to log every `fire()` it makes
-   (address, port, source ports, time) and diff that against the receiver's
-   arrivals for one frame - that names them in one run.
-2. or stop depending on the exact sequence: send the payload twice per frame with
+1. tie the alphabet to something both sides *know* instead of estimating it.
+   Either the receiver reads its own reader list (`gridSockets()`, exact, no
+   strays, no filter) and the sender's probe is driven to completeness - retry
+   until no new socket appears for ~15 s, which the retry loop above now makes
+   possible - or the decoder separates pulses from strays by *time*: the sender's
+   cadence is exact (600 ms, receipts dated to 1 ms) while a stray lands on no
+   slot, and the same slot map shows which pulses never arrived, so a hole can be
+   filled by trying the alphabet with the CRC as the judge. Both remove the
+   15-17-vs-10-13 mismatch of row 12; the timing version also removes the stray
+   problem, because an arrival off the cadence is not a symbol at all.
+2. or identify the strays at their source: log every `fire()` in the engine (tag,
+   address, port, source ports, time) under the diag flag and diff it against the
+   receiver's arrival list for one frame. That turns the hypothesis above into a
+   measurement in one run, and it is the only way to tell a queued probe check from
+   something nothing in this engine fired.
+3. or stop depending on the exact sequence: send the payload twice per frame with
    a known offset, or send each symbol twice back to back and let the decoder try
    both alignments; a duplicate-tolerant read costs one frame of wall clock, which
    the 3-attempt loop can afford now that a frame is ~64 s rather than ~20 min.
-3. or shrink the payload. 32 of the 40 bytes are the DTLS certificate fingerprint;
+4. or shrink the payload. 32 of the 40 bytes are the DTLS certificate fingerprint;
    if the fingerprint were transmitted only to the side that has to verify it
    (the DTLS client), the DTLS server's payload would be ~8 bytes, the frame would
    be 16-24 pulses, and at a 600 ms gap the whole exchange would fit in ~15 s.

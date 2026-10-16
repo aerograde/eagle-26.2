@@ -267,6 +267,17 @@
   // answer can take this long to appear at all (see the stall rule below).
   var PROBE_SETTLE_MIN_MS = 20000;
   var PROBE_STALL_ROUNDS = 3;
+  // A readback that yields fewer than two sockets is not an alphabet at all: the
+  // socket channel fires at one socket per symbol and refuses to aim at a single
+  // column.  A peer whose readers are not up yet answers nothing, so the probe
+  // is repeated until it can be aimed at, up to this ceiling.
+  var PROBE_RETRY_MS = 60000;
+  var PROBE_RETRY_GAP_MS = 6000;
+  // Two columns is the floor the channel can be aimed at, but the alphabet's size
+  // *is* the frame's length: 2 columns is one bit per pulse, a 320-pulse frame and
+  // 3 minutes of transmission.  Keep probing for a wider one while the peer's
+  // readers are still answering their first checks.
+  var PROBE_MIN_COLUMNS = 4;
   var BURST_FIRES = 40;          // fires per tick, so the stats thread keeps up
   var BURST_GAP_MS = 12;
   // The locate readback visits every scanner once per round and only then looks
@@ -1199,6 +1210,19 @@
       for (var i = 0; i < found.length; i++) set[found[i]] = true;
       for (var s = 0; s < (seeds || []).length; s++) {
         if (!seeds[s]) continue;
+        // A seed only names a symbol column if it is a *reader* socket: the window
+        // is the peer's identity, the probe fires at in-window ports only, and the
+        // receiver reads arrivals on its readers.  The responder path seeds the
+        // port the peer's first check came from, which is often one of its scanners
+        // or probes (measured: 55334, out of window) - unioning that in adds a
+        // column no pulse can ever land on, and the sender's alphabet then has a
+        // member the receiver's hot-socket filter never sees, which is a different
+        // alphabet, not a bigger one.
+        if (seeds[s] < W_START || seeds[s] > W_END) {
+          log("ports", "peer socket probe: ignoring seed " + seeds[s]
+            + " - outside the " + W_START + "-" + W_END + " reader window");
+          continue;
+        }
         if (!set[seeds[s]]) log("ports", "peer socket probe missed " + seeds[s]
           + ", which this page has already seen the peer on: seeding it in");
         set[seeds[s]] = true;
@@ -1759,9 +1783,11 @@
       // the symbol stream, they arrive for a minute after the probe (Chrome
       // paces the checks its ICE has queued), and interleaved junk breaks every
       // start offset of a decoder that needs consecutive arrivals.  Measured:
-      // 44 probe arrivals landed in the peer's stream 66 s after the probe, and
-      // the two runs that decoded a payload were the two whose streams happened
-      // to be free of them.
+      // 44 probe arrivals landed in the peer's stream 66 s after the probe, and a
+      // frame read carries 9-35 of them, so a decode only happens when they fall
+      // outside the frame's span (135 arrivals for 107 pulses: no decode; the
+      // same frame read later: 107, exact, once this filter had dropped the
+      // earlier arrivals of the sources that fired again).
       if (bySource[a.source] > 1) { dropped++; continue; }
       // One pulse, two arrivals: a pulse connection owns two local UDP sockets
       // and ICE checks the remote candidate from both, so the same check lands on
@@ -2555,7 +2581,35 @@
     return refreshProbePool().then(function () {
       return censusColumns();
     }).then(function () {
-      return probePeerPorts(peerAddress, proofPorts);
+      // The probe readback is a snapshot of which of the peer's sockets ICE has
+      // answered on *by now*, and two pages opened together boot ~10 s apart, so
+      // the side that gets the peer's address first can probe a peer whose
+      // readers do not exist yet.  Measured in a stock Chrome (no browser flags)
+      // run: one side read back 10 sockets and the other 0 - it seeded the one
+      // out-of-window port that had probed it (a scanner the peer closes), ran a
+      // frame at "1 column" and lost the exchange.  A readback with fewer than
+      // two sockets is now retried until it is usable, or until the ceiling
+      // passes; it is never used as an alphabet.
+      var probeStarted = now();
+      var probeAttempts = 0;
+      return (function probeUntilUsable() {
+        probeAttempts++;
+        return probePeerPorts(peerAddress, proofPorts).then(function (targets) {
+          var elapsed = now() - probeStarted;
+          if (targets.length >= PROBE_MIN_COLUMNS || elapsed >= PROBE_RETRY_MS) {
+            if (probeAttempts > 1) log("ports", "peer socket probe: " + targets.length
+              + " socket(s) on probe " + probeAttempts + " - the alphabet is usable");
+            if (targets.length < 2) log("ports", "peer socket probe: " + probeAttempts
+              + " probe(s) over " + Math.round(elapsed / 1000) + " s left "
+              + targets.length + " socket(s); the socket channel needs two");
+            return targets;
+          }
+          log("ports", "peer socket probe: " + targets.length + " socket(s) on probe "
+            + probeAttempts + " (" + PROBE_MIN_COLUMNS + " preferred) - the peer's readers"
+            + " may not be up yet, probing again");
+          return sleep(PROBE_RETRY_GAP_MS).then(probeUntilUsable);
+        });
+      })();
     }).then(function () {
       // The socket channel's alphabet: the peer's sockets, sorted (probePeerPorts
       // sorts), which is the same list the peer derives from gridSockets().
