@@ -364,10 +364,18 @@ the LAN address, no flags, no discovery server, each scored on its own exit stat
 | --- | --- | --- | --- |
 | 1 | 11 and 7 sockets | 107 and 160 pulses per copy | **connected** - `MESSAGE DELIVERED: alice -> bob`, `VERDICT: connected in both windows`, exit 0. Both sides decoded **copy 1**: `payload decoded by filling 3 hole(s) in a 104-arrival copy 1 of 7` (candidate 57 of 512) and `payload decoded by filling 1 hole(s) in a 159-arrival copy 1 of 6` (candidate 2 of 4). |
 | 2 | 3-11 sockets | 107 and 160 pulses per copy | one side connected, the other did not: the 4-socket side read 248 of 320 arrivals and gave up on the copy (`72 pulse(s) never arrived`), then retried with a 5-socket readback. Verdict `NOT connected: {'alice': 'linking', 'bob': 'fallback'}`, exit 1. |
+| 3 | 10 and 12 sockets | 107 pulses per copy on both sides | one side connected, the other did not, and this one is **not** the frame: the sender of the frame read its own list fine, but the other side read the *sweep* as 4 of the 8 columns (`peer column list: 4 socket(s) from 1 round(s) of 4 pulse(s)` against `8 socket(s) from 2 round(s) of 8` on the other side) - a partial first-appearance read that came out a shorter, still-plausible power of two - so it decoded against a four-socket alphabet and read 234 of 320 arrivals with `no payload yet`; its attempt 2 (a 10-socket readback) was cut off by the harness's own 300 s per-page wait. Verdict `NOT connected: {'alice': 'linking', 'bob': 'fallback'}`, exit 1. |
 
-A third artifact run was not completed: the engine harness (below) has to run on the
-same LAN and the same two-port window, so the two cannot run at once without
-confounding each other.
+So the sequence is **one pass in three**, and the two failures have two distinct,
+measured causes: (a) a probe readback of four sockets, which is the 160-pulse copy of
+run 2, and (b) a *partial sweep read* that produces a wrong but plausible alphabet
+(run 3). Neither is the two-copy decode, which worked whenever the alphabet was right
+- it decoded copy 1 in every run where the frame was read against the peer's real
+column list: 3 holes of 104 arrivals (run 1, run 3) and 1 hole of 159 (run 1).
+
+A fourth artifact run was not made: the engine harness below has to run on the same
+LAN and the same two-port window, so the two cannot run at once without confounding
+each other.
 
 **The engine harness on the final bytes** (`python3 tmp/autoconnect/run-peers.py 8124
 300000`, two headless Chromium engine pages, no discovery server) did **not** connect
@@ -456,6 +464,16 @@ Still flaky, and the reason this is not reliable yet:
 
 Where the next work goes, in order of expected value:
 
+1a. validate the sweep before it is used as an alphabet. The first-appearance read
+   takes the longest ascending run of first appearances, and a run that lost an entry
+   is still ascending - it is just shorter, and a shorter power of two is a valid
+   alphabet, so it is accepted and the frame is then read against the wrong index
+   space (run 3 above). The sweep sends every column three times, so the list can be
+   checked against itself: require each column of the run to appear at least twice in
+   the sweep part of the stream (before the first arrival of the frame's bulk), or
+   hold the list for one more read and use it only if the next read agrees. Both are
+a few lines in `readColumnSweep`, and both turn a wrong alphabet into no alphabet -
+   which is a retry instead of a failed copy.
 1. shrink the frame, which is now the *whole* reliability question (a copy's odds
    fall with its length: 5 holes of 107 is 4.7%, of 160 it is 3.1%, and the loss
    rate is per pulse). The payload is 320 bits because 32 of its 40 bytes are the
