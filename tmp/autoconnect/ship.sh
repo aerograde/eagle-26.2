@@ -25,24 +25,33 @@ echo "== commit =="
 git add target_teavm_wasm_gc/src/web/autoconnect.js tmp/autoconnect/SERVERLESS-LAN-FINAL.md \
         tmp/autoconnect/analyse-sweep.py tmp/autoconnect/ship.sh dist/direct-connect.html
 git commit -m "$(cat <<'MSG'
-Send the column list instead of guessing it, and read frames that arrive short
+Send the payload twice per attempt, read the column list by first appearance
 
-The serverless carrier's CRC could never match because each side derived the
-alphabet of pulse targets on its own - the sender from its probe readback, the
-receiver from the sockets that looked busy - which are two estimates of one list,
-so a frame was aimed at one index space and read against another. The sender now
-sweeps its columns three times, in ascending order, before every frame, and the
-receiver reads the port numbers off the arrivals, which needs no alphabet at all.
+One frame per attempt is a coin toss: a single hole or stray arrival costs the whole
+read, and the failure is silent. The payload is now sent twice inside one attempt,
+with a silence longer than any gap inside a copy between the copies, so each copy is
+read as its own burst and decoded on its own - contiguously, then allowing stray
+arrivals, then as a slotted read that fills up to five holes. The reader lottery was
+cut from sixteen readers to twelve to pay for the second copy out of Chrome's
+no-refund 500-connection lifetime cap.
 
-A frame that arrives missing a pulse or two is read as a slotted stream: the
-cadence is measured from the arrivals, a double gap is a hole, and the CRC chooses
-the symbol that fills it. The arrival stream is ordered by the read time because
-frames were also being scrambled by receipt stamps that jump seconds backwards. The
-final connection now reports a link that opens after its wait expired, and its
-pokes outlive the peer's retry loop instead of dying before it.
+The column sweep is now read as first appearances rather than as ascending bursts:
+the order in which the columns appear for the first time is the ascending list
+whatever the reads did to the bursts, and a busy page's stats queue was merging three
+rounds of four pulses into one burst of twelve that does not ascend - which left the
+reader with no alphabet at all and made a received frame undecodable. Arrivals are
+filtered by destination socket as well as by source-port multi-fire, and the payload
+parser rejects a port inside the reader window, which keeps a five-hole search from
+accepting a wrong candidate.
+
+A pooled carrier - one long-lived connection carrying a whole pass over the column
+list - was implemented and measured, then reverted: it delivered every pulse in the
+idle engine harness (160 of 160, 107 of 107) and lost about half of them in the real
+single-file client, and it is recorded as item 17 of the findings.
 
 Tested end to end on the shipped artifact in stock Chrome 154 with no feature flags
-and no discovery server: both windows reached "connected" and a message crossed.
+and no discovery server: both windows reached "connected" and a message crossed, on
+copy 1, with 3 and 1 holes filled.
 
 🤖 Generated with Codebuff
 Co-Authored-By: Codebuff <noreply@codebuff.com>

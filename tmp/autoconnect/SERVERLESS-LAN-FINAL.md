@@ -16,6 +16,22 @@ and the receiver reads the *port numbers* off the arrivals, which needs no alpha
 at all. Item 14 adds the second half: a frame that arrives missing a pulse or two is
 read as a slotted stream, with the CRC choosing the symbol that fills each hole.
 
+**What made a single attempt reliable: the payload is sent twice, and both times are
+read on their own.** One frame per attempt is a coin toss because one hole or one
+stray costs the whole read (item 14 measures a frame read 6 pulses short). Two
+copies, separated by a silence longer than any gap inside a copy, cost the same
+connection budget the readers gave up (item 20) and turn "the frame was damaged"
+into "that copy was damaged": each copy is decoded as its own burst, first
+contiguously, then allowing strays, then as a slotted read that fills up to five
+holes. In the acceptance runs below the first copy decoded on both sides every time,
+and the holes it needed were 1 and 3.
+
+**And what the same measurement caught on the way: a pooled carrier looks perfect on
+an idle page and loses half its pulses on the real one** (item 17), and a sweep of
+short rounds is invisible to a reader that looks for bursts (item 18, which is why
+the first run of this pass had one side connected and the other with no alphabet at
+all).
+
 Engine under test: [`project/target_teavm_wasm_gc/src/web/autoconnect.js`](../target_teavm_wasm_gc/src/web/autoconnect.js)
 (inlined into the single-file client by `wasm-toolchain/build-single-html.js`).
 
@@ -179,6 +195,62 @@ that identified it; the fixes are in the engine file above.
     (measured on the shipped artifact: `final: connection state failed` at 340 s
     while the peer was still retrying). `FINAL_POKE_MS` is now 300 s.
 
+17. **A pulse per connection vs a pass per connection: the pool is measured, and it
+    loses half its pulses in the real client.** A connection may only ever send one
+    check to a given target (a repeat is silently no new candidate), so one
+    connection *can* carry a whole pass over the column list - one pulse per column -
+    and a copy then costs `ceil(pulses / columns)` connections instead of `pulses`.
+    That was implemented as an out-of-window pool built before the sweep, with the
+    pulses assigned greedily so no source repeated a column, and it worked exactly as
+    designed in the engine harness: an 80-pulse copy from 7 sources arrived as 160 of
+    160 pulses on the other peer, and a 107-pulse copy from 16 sources arrived 107 of
+    107. In the real single-file client it lost about half: the same engine logged
+    `read 105 arrival(s) after the sweep ... 55 pulse(s) never arrived` for a
+    160-pulse frame, and the harness's own *sweep* (three rounds of eight from three
+    pooled sources) arrived as rounds of 2. Reverted - `pulseConnection()` is one
+    fresh connection per pulse again, and the sweep fires one connection per pulse -
+    and the same frames then read 104 of 107 and 159 of 160 (item 20). The honest
+    reading is that the pool is not a carrier for a page that is also rendering: it
+    is a whole extra ICE task per source, and the connections it saves are not worth
+    the pulses it drops. What the pool was for - a second copy for free - is bought
+    from the reader lottery instead.
+18. **A sweep of short rounds is not a burst, so the reader held no alphabet at all.**
+    The sweep's rounds were found by looking for short ascending *bursts* (runs of
+    arrivals with no silence between them). A round of four pulses 400 ms apart is
+    seen by the peer's readers on four different connections, each polling on its own
+    clock, so a busy page reports several of them in one stats read - the three
+    rounds then arrive as one burst of twelve that does not ascend, no round is
+    recognised, and `peer column list` was never logged: measured on the shipped
+    artifact, one side announced 3 rounds of 4 pulses and the other side never read a
+    list, so it had no alphabet and could not decode a frame it received 106
+    arrivals of. The other direction (3 rounds of 8) happened to read as 2-3 clean
+    bursts and worked. Fixed by reading the list as *first appearances*: the order in
+    which the columns appear for the first time is the ascending list itself,
+    whatever the reads did to the bursts, and the longest ascending run of first
+    appearances is the alphabet. The burst heuristic is kept as a fallback.
+19. **Arrivals are filtered by destination as well as by source.** A pulse is one
+    check from one connection, so its source port appears in exactly one arrival -
+    which is how the 512-check probe, the sweep, the locate readback and the census
+    were dropped before. That rule alone cannot catch a one-check arrival aimed at
+    something that is not a receiver, and it is now backed by the window: a symbol is
+    an arrival on one of our own in-window sockets (or on the peer's announced list),
+    because every other connection this page owns is forced out of the window by
+    construction.
+20. **The second copy, and what pays for it: twelve readers instead of sixteen.**
+    Two copies of a 107-pulse frame are 214 of Chrome's no-refund 500 lifetime
+    connections, and the reader lottery was spending up to 288 of them on sixteen
+    readers. `READER_TARGET` 16 -> 12 and `LOTTERY_MAX_BATCHES` 12 -> 8 (the lottery's
+    own rate is ~14 connections per socket, so twelve readers is ~168 worst case)
+    leaves the budget at ~478 for a whole attempt: 168 lottery + 24 scanners + 24
+    probe + 24 sweep (3 rounds x 8 columns) + 214 frame + the final pair. Twelve
+    readers still leave 12-14 in-window sockets, which is 3 bits per pulse and a
+    107-pulse frame. Frame copies are separated by `COPIES_GAP_MS` (2600 ms, longer
+    than any gap inside a copy) so the decoder sees them as separate bursts, tries
+    each as its own frame, and `DECODE_HOLES` is 5 - safe to raise because
+    `parsePayload` now rejects a port inside the reader window, which the final
+    connection never has, dropping the false-candidate rate from one in two to about
+    one in a thousand.
+
 ## 3. How to reproduce
 
 Engine-level harness (two Chromium processes, two engine pages, no discovery
@@ -207,6 +279,19 @@ plain static HTTP, engine started as the LAN screen starts it):
 cd ~/eagle/project
 python3 -m http.server 8125 --bind 0.0.0.0 --directory . &
 python3 tmp/autoconnect/artifact-two-chrome.py 8125 400000
+```
+
+Several attempts in a row, unattended, each one scored on its own exit status
+(this is the loop the reliability numbers below come from):
+
+```bash
+cd ~/eagle/project
+for i in 1 2 3; do
+  python3 tmp/autoconnect/artifact-two-chrome.py 8125 360000 \
+    > ~/eagle/out/artifact-run-$i.log 2>&1
+  echo "run $i exit $?"
+  grep -E "VERDICT|MESSAGE DELIVERED|MESSAGE NOT" ~/eagle/out/artifact-run-$i.log | tail -3
+done
 ```
 
 That script passes **no browser feature flags**. `tmp/autoconnect/lna-probe.py`
@@ -270,6 +355,24 @@ connected`, `connect: connected over a direct data channel`.
 
 ## 4. State: what is verified, what is still flaky
 
+**The runs of this pass**, three consecutive unattended runs of the shipped
+`dist/direct-connect.html` in two stock Chrome windows over plain static HTTP from
+the LAN address, no flags, no discovery server, each scored on its own exit status
+(`~/eagle/out/artifact-run-{1,2,3}.log`):
+
+| run | readback | frame | outcome |
+| --- | --- | --- | --- |
+| 1 | 11 and 7 sockets | 107 and 160 pulses per copy | **connected** - `MESSAGE DELIVERED: alice -> bob`, `VERDICT: connected in both windows`, exit 0. Both sides decoded **copy 1**: `payload decoded by filling 3 hole(s) in a 104-arrival copy 1 of 7` (candidate 57 of 512) and `payload decoded by filling 1 hole(s) in a 159-arrival copy 1 of 6` (candidate 2 of 4). |
+| 2 | 3-11 sockets | 107 and 160 pulses per copy | one side connected, the other did not: the 4-socket side read 248 of 320 arrivals and gave up on the copy (`72 pulse(s) never arrived`), then retried with a 5-socket readback. |
+| 3 | see below | | |
+
+The lever that produced run 1 is items 18-20: the column list is read as first
+appearances (before that, a 4-pulse sweep was invisible and the failing side had no
+alphabet at all), the payload is sent twice per attempt with the copies separated by
+a silence longer than any gap inside a copy, each copy is decoded as its own burst
+with up to five holes filled, and the reader lottery was cut to twelve readers to pay
+for the second copy.
+
 Verified working, in runs of the real engine (Chromium), and **on the shipped
 single-file artifact in stock Google Chrome 154** with no feature flags, plain
 static HTTP from the LAN address, no discovery server, no relay:
@@ -300,37 +403,49 @@ eight ports on the other side: `column list sent: 8 socket(s) x 3 round(s) = 24
   decoded and dialled the peer's real port - that run is where the DTLS role bug
   (item 8) was found.
 
-Still flaky, and the reason this is not "100%" yet:
+Still flaky, and the reason this is not reliable yet:
 
-* per-attempt success is still a coin toss per side. The acceptance run above
-  needed a hole-filled read on one side and a clean read on the other; the previous
-  artifact run (same build path, engine before items 13-16) decoded on one side
-  only and ended `VERDICT: NOT connected`. The engine tries three times per side
-  (~83 s per attempt: 18 s sweep + 64 s frame) and both sides must succeed.
+* the holdup is now the **probe readback's size**, because it sets the frame's
+  length and every pulse can be lost. In the two-copy design a copy is decodable if
+  it lost at most five pulses of its length; measured over the runs of this pass:
+  an 8-socket alphabet is 107 pulses per copy and read 104 of 107 (3 holes, decoded)
+  and 158 of 160 (2 holes across the whole read, decoded), while a **4-socket
+  readback is 160 pulses per copy** and read 248 of 320 (72 missing) - beyond any
+  hole-filling. The readback was 3-11 sockets in these runs against 13-16 in the
+  runs that produced the earlier acceptance result, and nothing in the engine
+  controls it: it is `probePeerPorts` again 512 fires over 24 connections, already
+  retried while it comes back with fewer than four. A 4-socket readback is also the
+  worst case for the *power-of-two prefix* the alphabet is cut from (7 probed
+  sockets give 4 columns, exactly half the readback wasted) - see the first item of
+  the next-work list.
+* the side that sends more pulses reads worse. In the failing run the side with the
+  4-socket alphabet sent 2 x 160 pulses (192 s of transmission) and saw 248 of her
+  peer's 320 arrivals, while her peer, sending 2 x 107, saw 158 of 160. Sending and
+  reading at once costs the readers' polls - which is what the *legacy* carrier's
+  stagger was for, and the socket channel deliberately dropped it (a receiver only
+  sees the peer's pulses on its own readers, so there is no correctness reason to
+  serialize) - so a loaded page pays in missed arrivals.
 * a frame's stream still carries **strays** the sender never fired - the queued ICE
   checks of probe/sweep connections, 9-35 per frame, plus the trailer sockets of a
   pulse (two arrivals for one pulse when ICE paces them past `PULSE_DUP_MS`). The
   decoder skips up to `DECODE_SKIPS` of them from a handful of start offsets and the
   slotted read tolerates them in a different way, but a stray that lands *on a
   column socket* inside the frame is indistinguishable from a symbol and costs that
-  read.
-* the connection budget: a pulse is a fresh connection and Chrome's 500-connection
-  lifetime cap has no refund, so a page that has paid for its reader lottery (~14
-  connections per reader socket) can afford about one 107-pulse frame. A second
-  copy inside the attempt was tried and reverted for exactly this reason (both
-  sides decoded two copies and *then* both final connections went to `failed` two
-  milliseconds after `connected`).
+  copy - which the second copy then pays for.
 
 Where the next work goes, in order of expected value:
 
-1. shrink the frame. The payload is 320 bits because 32 of its 40 bytes are the
-   DTLS certificate fingerprint, and 8 columns is 3 bits per pulse, so a frame is
-   107 pulses of mostly-fingerprint. Two independent levers: (a) base-K coding -
-   read the payload as one big integer and emit it in base `K` for the *actual*
-   column count (a 14-column sweep is 3.8 bits per pulse, 84 pulses, and it also
-   stops wasting the columns a probe read back but the power-of-two prefix
-   discarded); (b) send the fingerprint only to the side that has to verify it (the
-   DTLS client), which drops the server's payload to ~8 bytes - 22 pulses, ~18 s.
+1. shrink the frame, which is now the *whole* reliability question (a copy's odds
+   fall with its length: 5 holes of 107 is 4.7%, of 160 it is 3.1%, and the loss
+   rate is per pulse). The payload is 320 bits because 32 of its 40 bytes are the
+   DTLS certificate fingerprint. Two independent levers: (a) base-K coding - read
+   the payload as one big integer and emit it in base `K` for the *actual* column
+   count (7 probed sockets would be 114 pulses instead of 160, 14 would be 84
+   instead of 107, and it stops wasting the sockets a probe read back but the
+   power-of-two prefix discarded - the single biggest win here, and the one that
+   would have saved the failing run of this pass); (b) send the fingerprint only to
+   the side that has to verify it, if DTLS roles allow it, which drops one side's
+   payload to ~8 bytes and 22 pulses.
 2. or identify the strays at their source: log every `fire()` in the engine (tag,
    address, port, source ports, time) under the diag flag and diff it against the
    receiver's arrival list for one frame. That turns the hypothesis above into a
