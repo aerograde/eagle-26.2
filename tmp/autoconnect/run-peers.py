@@ -31,8 +31,9 @@ with sync_playwright() as p:
 
     # Start both peers at the same moment: the rendezvous assumes both pages are
     # looking for each other at roughly the same time.
+    diag = "&acdiag=1" if __import__("os").environ.get("ACDIAG") == "1" else ""
     for i, page in enumerate(pages):
-        page.goto("%s?name=%s" % (url, "alice" if i == 0 else "bob"))
+        page.goto("%s?name=%s%s" % (url, "alice" if i == 0 else "bob", diag))
 
     for page in pages:
         try:

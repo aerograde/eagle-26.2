@@ -200,7 +200,18 @@
   // nine, and the copies came out 160/85/39.  Twenty readers put ~20 sockets in
   // the window, rounds collapses to 1, and the delivered quota of three carries
   // all three copies.
-  var READER_TARGET = 20;       // reader connections = grid sockets
+  // Sixteen, not twenty.  The socket channel pays for its accuracy in getStats()
+  // passes: one per reader per sweep through a queue that runs one at a time, so
+  // the receiver samples each of its sockets once every K x pass, and a pulse
+  // connection has to outlive that or its arrival is never read (measured on a
+  // loaded machine: 4-60 s per pass, against 20-60 ms on a quiet one).  K = 16
+  // keeps the sweep five times shorter than K = 20 and still gives 4 bits per
+  // pulse; it also leaves the connection budget room for retries.  Chrome's
+  // lifetime cap is 500 connections per page with no refund on close, the
+  // lottery costs ~14 connections per socket (288 for twenty, 224 for sixteen),
+  // and a payload frame is 80 pulses - so three attempts only fit if the pool is
+  // smaller.
+  var READER_TARGET = 16;       // reader connections = grid sockets
   // The lottery keeps ~7% of its attempts (run 17: 17 sockets from 8 x 32
   // created; run 16: 10 from 6 x 24), so one socket costs ~14 connections and
   // Chrome's 500-connection lifetime cap - with no refund on close - is what
@@ -246,10 +257,21 @@
   var SCAN_BURST_GAP_MS = 40;
   var SCAN_GRACE_MS = 12000;
   var SCAN_BUDGET_MS = 60000;
-  var PROBE_WAIT_MS = 15000;     // the readback keeps polling until this deadline
+  // The probe readback does not stop at the first answer: the list it returns is
+  // the sender's alphabet, and the peer decodes against its own socket list, so a
+  // short list is a *different* alphabet, not a slow transmission.  It polls
+  // while rounds still find sockets and stops after two empty ones; this is the
+  // ceiling on that.
+  var PROBE_WAIT_MS = 45000;
+  // A readback with nothing in it yet is not a settled readback: the first
+  // answer can take this long to appear at all (see the stall rule below).
+  var PROBE_SETTLE_MIN_MS = 20000;
+  var PROBE_STALL_ROUNDS = 3;
   var BURST_FIRES = 40;          // fires per tick, so the stats thread keeps up
   var BURST_GAP_MS = 12;
-  var LOCATE_WAIT_MS = 15000;
+  // The locate readback visits every scanner once per round and only then looks
+  // at its deadline, so a round has to fit inside it on a loaded machine.
+  var LOCATE_WAIT_MS = 30000;
   var CENSUS_WAIT_MS = 2000;
   // Three copies must all land before the union can be complete: a copy is
   // list(8 s) + 2 rounds(8 s each) + gap(6 s) = 30 s at K >= 10, so three copies
@@ -266,7 +288,12 @@
   // transmission to finish.  The quiet page is then read at ~0.5 s per pass, the
   // latency the carrier was sized against.
   var STAGGER_MS = 45000;
-  var MAX_ATTEMPTS = 1;
+  // Three, not one: one frame is one clean read of ~80 pulse arrivals, and a
+  // loaded receiver misses some.  Each attempt is a fresh set of connections and
+  // a fresh frame, so the odds compound instead of resetting.  This was 1, which
+  // made a single unlucky read the end of the run ("no payload decoded after 1
+  // attempts").
+  var MAX_ATTEMPTS = 3;
   // A stats pass is the expensive thing this file does: with ~100 live
   // connections it has been measured at 0.25-3 s.  At 20 ms per cycle the six
   // readers were issuing ~300 passes a second, which is what starved the very
@@ -283,6 +310,7 @@
   var STUCK_BACKOFF_MS = 1200;
   var STUCK_BACKOFF_MS_MAX = 4000;
   var WATCH_TICK_MS = 150;      // decode/exchange decisions, no stats involved
+  var EXCHANGE_POLL_MS = 200;   // reader cycle while a frame is in flight
   var CONNECT_TIMEOUT_MS = 25000;
   var STUN_DEFAULT = [{ urls: "stun:stun.l.google.com:19302" }];
 
@@ -300,6 +328,18 @@
   var attempt = 0;
 
   var selfId = randomHex(2);
+  // selfId is a display string (and may be replaced by the game layer through
+  // setIdentity with whatever it uses).  The payload has two bytes for it, so the
+  // numeric form is kept here rather than coerced at every use: `"12bb" >> 8` is
+  // 0, and that is what the peer received for every payload ever sent.
+  var selfIdNum = (function () {
+    var v = parseInt(selfId, 16);
+    return (isFinite(v) && v > 0 && v <= 0xFFFF) ? v : 1;
+  })();
+  function refreshSelfIdNum() {
+    var v = parseInt(selfId, 16);
+    selfIdNum = (isFinite(v) && v > 0 && v <= 0xFFFF) ? v : 1;
+  }
   var selfName = "player-" + selfId;
   var certificate = null;
   var fingerprint = "";
@@ -320,6 +360,10 @@
   var finalPort = 0;
   var finalChannel = null;
   var finalRemoteApplied = false;
+  // How long the final connection keeps poking the peer's advertised port.  It
+  // has to cover the peer's own exchange: both sides run 64 s frames, so a side
+  // that decoded on its first attempt can wait a whole attempt for the other.
+  var FINAL_POKE_MS = 150000;
   var connectedPeer = null;
 
   var arrivals = [];                    // { pc, port, source, at }
@@ -327,7 +371,13 @@
   var ownWindowPorts = Object.create(null);
   var peerAddress = null;
   var peerPort = 0;                     // first peer socket seen probing us
+  var proofPorts = [];                  // peer sockets this page has already proved
   var peerTargets = [];                 // peer sockets to aim at (probe readback)
+  // True while the discovery sweep still has rounds to fire.  Discovery is over
+  // as soon as a peer is found or it starts probing us, and the pump must stop
+  // then - it is 130k checks over 24 connections, and it outlives the sweep's own
+  // return by minutes if nobody tells it to stop.
+  var sweepActive = false;
   var exchange = { active: false, done: false, startedAt: 0, gen: 0 };
   var ready = false;
   // True while the census and the peer-socket probe are reading this page's
@@ -344,6 +394,9 @@
 
   // ---------------------------------------------------------------- helpers
   function now() { return Date.now(); }
+  // The page's time origin, so a stats timestamp given as "milliseconds since the
+  // origin" can be put on the same clock as now() (Date.now()).
+  var statsOrigin = (window.performance && performance.timeOrigin) || 0;
 
   function randomHex(bytes) {
     var buf = new Uint8Array(bytes);
@@ -519,6 +572,7 @@
   // created - so it must never be asked for twice: the same (source, target)
   // pair is never fired again, even in a later copy.
   function fire(pc, address, port) {
+    if (!pc) return Promise.resolve(false);   // a pool that was refreshed mid-burst
     var used = pc.__acUsed || (pc.__acUsed = Object.create(null));
     var key = address + ":" + port;
     if (used[key]) return Promise.resolve(false);
@@ -546,10 +600,40 @@
   var statsNormal = [];    // census, pool building, probing
   var statsInFlight = 0;
   var statsBusyMs = 0;
+  // EWMA of one getStats() pass.  Every adaptive timing in this file is built on
+  // it: how long the page takes to answer decides how often a reader can be
+  // sampled, and therefore how long a pulse connection has to stay alive for the
+  // peer to read it.
+  var statsPassMs = 30;
+
+  // Urgent reads first, but not forever.  Serving the high queue until it is
+  // empty starves everything else when the reads are slow: measured on a loaded
+  // machine with 16 readers timing out at 4 s each, the high queue was never
+  // empty, no census job ever reached the slot, and the engine sat in phase 1.5
+  // for three minutes without printing a single line.  A timed-out job is dropped
+  // rather than run later: its caller has already given up, and running it would
+  // spend the one slot on an answer nobody reads.
+  var STATS_HIGH_BURST = 4;
+  var statsServedHigh = 0;
+  var statsDropped = 0;
 
   function pumpStats() {
     while (statsInFlight < STATS_MAX_IN_FLIGHT && (statsHigh.length || statsNormal.length)) {
-      var job = statsHigh.length ? statsHigh.shift() : statsNormal.shift();
+      var job;
+      if (statsHigh.length && (statsServedHigh < STATS_HIGH_BURST || !statsNormal.length)) {
+        job = statsHigh.shift();
+        statsServedHigh++;
+      } else {
+        job = statsNormal.shift() || statsHigh.shift();
+        statsServedHigh = 0;
+      }
+      if (job.cancelAt && now() > job.cancelAt) {
+        statsDropped++;
+        logThrottled("stats", "dropped " + statsDropped + " read(s) whose caller timed out while"
+          + " they waited for the queue slot", 3000);
+        job.resolve(null);
+        continue;
+      }
       statsInFlight++;
       Promise.resolve().then(job.fn).then(function (value) {
         statsInFlight--;
@@ -563,17 +647,22 @@
     }
   }
 
-  function withStats(fn, high) {
+  function withStats(fn, high, cancelAt) {
     return new Promise(function (resolve, reject) {
-      (high ? statsHigh : statsNormal).push({ fn: fn, resolve: resolve, reject: reject });
+      (high ? statsHigh : statsNormal).push({ fn: fn, resolve: resolve, reject: reject, cancelAt: cancelAt || 0 });
       pumpStats();
     });
   }
 
-  function pcStats(pc, high) {
+  function pcStats(pc, high, timeoutMs) {
+    var t0 = now();
     return withStats(function () {
       return withTimeout(pc.getStats(), STATS_JOB_TIMEOUT_MS);
-    }, high).then(function (stats) { return stats || EMPTY_STATS; });
+    }, high, timeoutMs ? t0 + timeoutMs : 0).then(function (stats) {
+      var took = now() - t0;
+      if (took > 0 && took < STATS_JOB_TIMEOUT_MS) statsPassMs = statsPassMs * 0.7 + took * 0.3;
+      return stats || EMPTY_STATS;
+    });
   }
 
   function udpPorts(pc) {
@@ -626,22 +715,46 @@
 
   // Every remote candidate of a connection, with the local socket that carried
   // it: the whole read side of the carrier.
-  function candidatesWithSockets(pc) {
-    return pcStats(pc, true).then(function (stats) {
-      var localOf = {}, portOf = {}, rows = [];
+  // When a packet was received on a pair, on the page's own clock.
+  //
+  // A reader's read time is not an arrival time: the read happens on the reader's
+  // own schedule, and a poll can be seconds late (measured read latencies of 7 ms
+  // to 2128 ms for pulses fired 600 ms apart) - which is why sorting arrivals by
+  // read time put 14-24% of them out of the order they were fired in, and no
+  // payload could ever decode.  The pair stats carry the receipt itself:
+  // candidate-pair.lastPacketReceivedTimestamp is stamped when the packet is
+  // processed, to the millisecond, in one clock for every reader.  Chrome has
+  // reported this as epoch milliseconds, as milliseconds since the page's time
+  // origin and (older builds) as seconds; all three are normalised here, and a
+  // value that does not land in a plausible window is rejected rather than used.
+  function receivedAtOf(value) {
+    var t = typeof value === "number" ? value : Number(value);
+    if (!isFinite(t) || t <= 0) return 0;
+    if (t > 1e12) return t;                       // epoch milliseconds
+    if (t < 1e6) return t * 1000 + statsOrigin;    // seconds since the origin
+    return t + statsOrigin;                        // ms since the origin
+  }
+
+  function candidatesWithSockets(pc, timeoutMs) {
+    return pcStats(pc, true, timeoutMs).then(function (stats) {
+      var localOf = {}, portOf = {}, recvOf = {}, rows = [];
       stats.forEach(function (s) {
-        if (s.type === "candidate-pair" && s.localCandidateId && s.remoteCandidateId) {
-          localOf[s.remoteCandidateId] = s.localCandidateId;
-        }
+        if (s.type !== "candidate-pair" || !s.localCandidateId || !s.remoteCandidateId) return;
+        localOf[s.remoteCandidateId] = s.localCandidateId;
+        var at = receivedAtOf(s.lastPacketReceivedTimestamp);
+        if (at && at > (recvOf[s.remoteCandidateId] || 0)) recvOf[s.remoteCandidateId] = at;
       });
       stats.forEach(function (s) {
         if (s.type === "local-candidate" && s.id) portOf[s.id] = s.port;
       });
       stats.forEach(function (s) {
         if (s.type === "remote-candidate") {
+          var at = recvOf[s.id] || 0;
+          var plausible = at && at > now() - 120000 && at < now() + 5000;
           rows.push({
             id: s.id, port: s.port, candidateType: s.candidateType,
-            localPort: portOf[localOf[s.id]] || 0
+            localPort: portOf[localOf[s.id]] || 0,
+            receivedAt: plausible ? at : 0
           });
         }
       });
@@ -837,10 +950,15 @@
       } catch (e) {
         channel = null;
       }
+      // Local offer only: the peer's answer (which is what carries the *real*
+      // DTLS fingerprint) cannot be applied here, because the time to apply it is
+      // after the payload has been decoded and the fingerprint is known - and a
+      // second remote description on the same connection is not allowed.  The
+      // local description alone is enough to gather the socket whose port the
+      // payload advertises and to keep it for the whole run: applying the answer
+      // later does not restart ICE or move that socket.
       return pc.createOffer().then(function (offer) {
         return pc.setLocalDescription({ type: "offer", sdp: mungeCreds(offer.sdp) });
-      }).then(function () {
-        return pc.setRemoteDescription({ type: "answer", sdp: forgeAnswer(pc.localDescription.sdp) });
       }).then(function () {
         return waitForPorts(pc);
       }).then(function (ports) {
@@ -885,6 +1003,7 @@
       + " rounds of ~" + rounds[0].length + " checks");
 
     var found = null;
+    sweepActive = true;
     var pumpDone = false;
     var pumpGraceUntil = 0;
     var pumpCursor = 0;
@@ -893,7 +1012,7 @@
     var pollRounds = 0;
 
     function pumpRound() {
-      if (!running || found) { pumpDone = true; return Promise.resolve(); }
+      if (!running || found || !sweepActive || peerPort) { pumpDone = true; return Promise.resolve(); }
       if (pumpCursor >= rounds.length) {
         pumpDone = true;
         pumpGraceUntil = now() + SCAN_GRACE_MS;
@@ -992,7 +1111,10 @@
     log("ports", label + ": " + ports.length + " checks over " + scanners.length
       + " scanner(s) (~" + Math.ceil(ports.length / scanners.length) + " each)");
     return burst().then(function () {
-      var deadline = now() + deadlineMs;
+      var started = now();
+      var deadline = started + deadlineMs;
+      var lastCount = -1;
+      var stalled = 0;
       return (function poll() {
         // Read back from the firing connections only, a few at a time.
         return mapLimited(scanners, STATS_BATCH, function (pc) {
@@ -1006,11 +1128,42 @@
           });
         }).then(function () {
           // Never stop at the first answer: a peer has as many sockets as it has
-          // readers, and the count is the grid's width - a short list means a
-          // slow, long transmission.
-          if (now() > deadline) return;
-          if (Object.keys(found).length >= gridSockets().length) return;
-          return sleep(1000).then(poll);
+          // readers, and this list is the sender's *alphabet* - the peer numbers
+          // its own sockets and expects the same list in the same order, so a
+          // truncated readback is not a slow transmission, it is a different
+          // alphabet and the CRC never matches (measured: 9 of 17 sockets read
+          // back in a 15 s deadline, and three exchange frames decoded nothing).
+          // The stop condition is therefore progress, not a clock: keep reading
+          // while a round still finds a socket, and stop after two that find
+          // none.  The ceiling is the deadline the caller passes.
+          var count = Object.keys(found).length;
+          if (count > lastCount) {
+            lastCount = count;
+            stalled = 0;
+          } else {
+            stalled++;
+          }
+          var elapsed = now() - started;
+          // Two rounds with no new socket is only a *settled* readback once
+          // something was found and the connection has had time to work through
+          // its pairs: a check is sent when Chrome's ICE gets to it, not when
+          // the candidate is added, and on a busy page that first answer can be
+          // seconds away (measured: a readback that stopped after 2.9 s and 0
+          // sockets in a run whose peer had 17).
+          if (count === 0 && elapsed < PROBE_SETTLE_MIN_MS) {
+            stalled = 0;
+          }
+          if (stalled >= PROBE_STALL_ROUNDS && (count > 0 || elapsed >= PROBE_SETTLE_MIN_MS)) {
+            log("ports", label + ": readback settled at " + count + " socket(s) after "
+              + Math.round(elapsed) + " ms (" + stalled + " round(s) with no new one)");
+            return;
+          }
+          if (now() > deadline) {
+            log("ports", label + ": readback hit its " + Math.round(elapsed / 1000)
+              + " s deadline with " + count + " socket(s)");
+            return;
+          }
+          return sleep(750).then(poll);
         });
       })();
     }).then(function () {
@@ -1032,11 +1185,25 @@
   // port came from aiming at a list cached much earlier.  Only a reader socket
   // can ever appear here, because every connection of ours that is not a reader
   // owns no in-window socket, and the probe only fires at in-window ports.
-  function probePeerPorts(address) {
+  // `seeds` are sockets this page has already *proved* carry the peer: the port
+  // the sweep answered from (its pair succeeded) or the port that probed us (its
+  // arrival is in the arrival list).  They are unioned into the probe result: a
+  // probe readback is a snapshot of which pairs ICE has got to yet, so it can
+  // come back with one socket or none while the peer has seventeen, and the
+  // alphabet needs at least two.
+  function probePeerPorts(address, seeds) {
     var ports = [];
     for (var p = W_START; p <= W_END; p++) ports.push(p);
     return probeFromScanners(address, ports, "peer socket probe", PROBE_WAIT_MS).then(function (found) {
-      peerTargets = found;
+      var set = Object.create(null);
+      for (var i = 0; i < found.length; i++) set[found[i]] = true;
+      for (var s = 0; s < (seeds || []).length; s++) {
+        if (!seeds[s]) continue;
+        if (!set[seeds[s]]) log("ports", "peer socket probe missed " + seeds[s]
+          + ", which this page has already seen the peer on: seeding it in");
+        set[seeds[s]] = true;
+      }
+      peerTargets = Object.keys(set).map(Number).sort(function (a, b) { return a - b; });
       return peerTargets;
     });
   }
@@ -1089,26 +1256,55 @@
   // sank the previous build), and - measured in this pass - a connection answers
   // an incoming check from that same socket, so the socket the *receiver* names
   // as a column is the socket the *sender* read back from its own probe.
+  // The label costs one stats read per connection, and a loaded page answers
+  // those slowly.  This used to fire once, sleep 2 s and read once: a slow pass
+  // then labelled a handful of sockets and the exchange ran on a three-socket
+  // alphabet that could never decode a payload - the run's own log said
+  // "census: reader sockets: 3 of 20 labelled" and it carried on regardless.
+  // Now it keeps asking until every connection is labelled or the deadline
+  // passes, and re-fires for whatever is still unlabelled: a pair that has
+  // already carried a check produces no new answer, so each round uses the next
+  // port above the window (nothing binds those either).
+  var CENSUS_DEADLINE_MS = 45000;
   function censusConnections(pcs, label) {
     if (!peerAddress || !pcs.length) return Promise.resolve(0);
-    var chain = Promise.resolve();
-    pcs.forEach(function (pc) {
-      chain = chain.then(function () { return fire(pc, peerAddress, CENSUS_PORT); });
-    });
-    return chain.then(function () { return sleep(CENSUS_WAIT_MS); }).then(function () {
-      return mapLimited(pcs, STATS_BATCH, function (pc) {
-        return usedLocalPorts(pc).then(function (map) {
-          var chosen = map[CENSUS_PORT] || 0;
-          if (!chosen) return;
-          if (!pc.__acChosen) pc.__acChosen = chosen;   // the pair is pruned later; keep the label
-        });
-      });
-    }).then(function () {
+    var deadline = now() + CENSUS_DEADLINE_MS;
+    var roundIndex = 0;
+    function done() {
       var n = 0;
       pcs.forEach(function (pc) { if (pc.__acChosen) n++; });
-      log("census", label + ": " + n + " of " + pcs.length + " labelled");
+      log("census", label + ": " + n + " of " + pcs.length + " labelled"
+        + (n < pcs.length ? " (census deadline after " + roundIndex + " round(s))" : ""));
       return n;
-    });
+    }
+    function round() {
+      var pending = [];
+      for (var i = 0; i < pcs.length; i++) if (!pcs[i].__acChosen) pending.push(pcs[i]);
+      if (!pending.length || now() > deadline) return Promise.resolve(done());
+      var censusPort = CENSUS_PORT - (roundIndex % 64);
+      roundIndex++;
+      logThrottled("census", label + ": round " + roundIndex + " - firing " + pending.length
+        + " check(s) at port " + censusPort + " (stats pass " + Math.round(statsPassMs) + " ms)", 1000);
+      var fired = Promise.resolve();
+      pending.forEach(function (pc) {
+        fired = fired.then(function () { return fire(pc, peerAddress, censusPort); });
+      });
+      return fired.then(function () {
+        logThrottled("census", label + ": round " + roundIndex + " fired", 1000);
+        return sleep(CENSUS_WAIT_MS);
+      }).then(function () {
+        return mapLimited(pending, STATS_BATCH, function (pc) {
+          return usedLocalPorts(pc).then(function (map) {
+            var chosen = map[censusPort] || 0;
+            if (chosen && !pc.__acChosen) pc.__acChosen = chosen;   // the pair is pruned later; keep the label
+          });
+        });
+      }).then(function () {
+        logThrottled("census", label + ": round " + roundIndex + " read back", 1000);
+        return round();
+      });
+    }
+    return round();
   }
 
   function censusColumns() {
@@ -1143,19 +1339,40 @@
     return out;
   }
 
+  // Every in-window socket this page owns.  This - not the census label and not
+  // the peer's list - is the alphabet a received pulse is indexed against: the
+  // peer probes our in-window ports and numbers the ones that answer, so the
+  // sorted list of our own in-window sockets is the same list in the same order,
+  // and a pulse that landed on socket X decodes as X's index.
+  function ownSocketAlphabet() {
+    var set = Object.create(null);
+    for (var i = 0; i < readers.length; i++) {
+      var win = readers[i].win || [];
+      for (var j = 0; j < win.length; j++) if (inWindow(win[j])) set[win[j]] = true;
+    }
+    var out = [];
+    for (var p in set) out.push(Number(p));
+    out.sort(function (a, b) { return a - b; });
+    return out;
+  }
+
   // -------------------------------------------------------- readers: arrivals
   function pollReader(reader) {
     if ((reader.stuckUntil || 0) > now()) return Promise.resolve();
     var t0 = now();
-    return withTimeout(candidatesWithSockets(reader.pc), reader.timeoutMs || POLL_TIMEOUT_MS).then(function (rows) {
+    return withTimeout(candidatesWithSockets(reader.pc, reader.timeoutMs || POLL_TIMEOUT_MS),
+        reader.timeoutMs || POLL_TIMEOUT_MS).then(function (rows) {
       var took = now() - t0;
       if (!rows) {
         // Backoff and timeout belong to the reader, not to a socket key: the old
         // `stuckUntil[reader.win[0]]` let one slow report delay every reader in
         // the same cycle and then skipped the key for everyone.
         reader.fails = (reader.fails || 0) + 1;
-        reader.stuckUntil = now() + Math.min(STUCK_BACKOFF_MS * reader.fails, STUCK_BACKOFF_MS_MAX);
-        reader.timeoutMs = Math.min((reader.timeoutMs || POLL_TIMEOUT_MS) + 750, POLL_TIMEOUT_MS_MAX);
+        var inFrame = exchange.active && !exchange.done;
+        reader.stuckUntil = now() + (inFrame ? EXCHANGE_POLL_MS
+          : Math.min(STUCK_BACKOFF_MS * reader.fails, STUCK_BACKOFF_MS_MAX));
+        reader.timeoutMs = inFrame ? Math.min(POLL_TIMEOUT_MS, POLL_TIMEOUT_MS_MAX)
+          : Math.min((reader.timeoutMs || POLL_TIMEOUT_MS) + 750, POLL_TIMEOUT_MS_MAX);
         logThrottled("grid", "reader " + reader.win.join("/") + " stat poll timed out (" + took
           + " ms, " + reader.fails + " in a row; this reader's own timeout is now "
           + reader.timeoutMs + " ms)");
@@ -1177,12 +1394,18 @@
         if (r.candidateType !== "prflx") continue;
         if (seen[r.id]) continue;
         seen[r.id] = true;
-        var at = now();
+        var observedAt = now();
+        // The arrival's own clock when the pair can supply it (see
+        // receivedAtOf), the read time only as a fallback.
+        var at = r.receivedAt || observedAt;
         // The socket a pulse landed on: reported per pair when available, and
         // otherwise unambiguous because a reader aims at one port.
         var port = r.localPort || (reader.win.length === 1 ? reader.win[0] : 0);
         if (!port) continue;
-        arrivals.push({ reader: reader, port: port, source: r.port, at: at });
+        arrivals.push({ reader: reader, port: port, source: r.port, at: at, obsAt: observedAt });
+        if (DIAG) log("diag", "arrival seq=" + arrivals.length + " port=" + port
+          + " source=" + r.port + " at=" + at + " obs=" + observedAt
+          + " precise=" + (r.receivedAt ? 1 : 0) + " readerwin=" + reader.win.join("/"));
         if (arrivals.length > 6000) arrivals.splice(0, arrivals.length - 4000);
         lastArrivalAt = at;
         if (!peerPort) {
@@ -1228,9 +1451,24 @@
       // pass - and a pulse that arrives a moment early is re-read on the next
       // tick, because the pulse connection lives SYM_CLOSE_AFTER_MS and the
       // decode only runs once the arrivals settle.
-      if (preparing) return sleep(POLL_CYCLE_MS).then(step);
+      // The cycle follows the measured pass cost: asking for a read every 250 ms
+      // while one read takes four seconds queues sixteen jobs a second that
+      // cannot be served, and the backlog is what starved the census and the
+      // probe (and, on the read side, dated arrivals against reads that were
+      // issued long before them).
+      var cycle = Math.max(POLL_CYCLE_MS, Math.min(2000, statsPassMs));
+      // While a frame is in flight the readers are the *clock* of the decode: a
+      // pulse's symbol is only readable in the order it was fired, and a reader
+      // that is backed off past the pulse gap reports its arrival after the next
+      // pulse's (measured: 15-21% of the sampled pulses read out of order at a
+      // 600 ms gap, all of them on readers that had just backed off).  During the
+      // exchange the readers poll tight and do not back off, which is affordable
+      // because the frame is the only thing running: the peer's own census, probe
+      // and sweep are all over by then.
+      if (exchange.active && !exchange.done && cycle > EXCHANGE_POLL_MS) cycle = EXCHANGE_POLL_MS;
+      if (preparing) return sleep(cycle).then(step);
       return pollReader(reader).then(function () {
-        return sleep(POLL_CYCLE_MS).then(step);
+        return sleep(cycle).then(step);
       });
     }
     return Promise.resolve().then(step).catch(function (err) {
@@ -1288,7 +1526,7 @@
 
   function buildPayload() {
     var body = [(PAYLOAD_MAGIC >> 8) & 0xFF, PAYLOAD_MAGIC & 0xFF];
-    body.push((selfId >> 8) & 0xFF, selfId & 0xFF);
+    body.push((selfIdNum >> 8) & 0xFF, selfIdNum & 0xFF);
     var fp = fingerprintBytes(fingerprint);
     for (var i = 0; i < 32; i++) body.push(fp[i] || 0);
     body.push((finalPort >> 8) & 0xFF, finalPort & 0xFF);
@@ -1351,19 +1589,68 @@
   // fresh connection (E4 in section 27: re-adding a known candidate to a known
   // connection is a no-op), so the payload's cost is connections, and the
   // columns per pulse are chosen to fit the 500-connection lifetime cap.
-  var SYM = { t0: 0, cols: [], perPulse: 0, pulses: [], seen: {}, settled: 0 };
+  var SYM = { t0: 0, cols: [], perPulse: 0, pulses: [], seen: {}, settled: 0, frameMs: 0, bestStream: 0 };
   // The socket channel is the carrier unless a run is explicitly asked for the
   // legacy grid (window.__eaglerAC.start({ socket: false })).
+  // Diagnostic, off unless the page asks for it (`...&acdiag=1`): one line per
+  // arrival (which of our sockets it landed on, the source port it came from,
+  // and the order the read reported it in) and one per sampled outgoing pulse
+  // (its index, symbol and the ports its own connection owns).  A harness can
+  // then pair arrivals to pulses by source port and measure - without guessing -
+  // whether the order the reader reports is the order the sender fired.
+  var DIAG = /(^|[?&])acdiag=1(&|$)/.test(location.search || "");
   var useSocketChannel = true;
   var SYM_SETTLE_MS = 250;      // a pulse is read this long after the last one
-  var SYM_PULSE_GAP_MS = 80;    // ICE pacing: one pulse per tick
+  // Two receipts on one socket closer than this are one pulse (its two local
+  // sockets), not two symbols: the pulse gap is never this small.
+  // Wide enough for the two copies of a pulse (ICE may pace the two sockets a
+  // few hundred ms apart) and narrower than the pulse gap, so it can never merge
+  // two symbols: pulses are fired PULSE_GAP_MS apart (600 ms at the floor).
+  var PULSE_DUP_MS = 400;
+  // How many stray arrivals the decoder may skip when the contiguous pass fails,
+  // and over how many start positions it may look for them.
+  var DECODE_SKIPS = 3;
+  var DECODE_STARTS = 12;
+  // Operations the skip pass may spend per candidate alphabet (a few hundred
+  // thousand symbol steps run in well under a second).
+  var DECODE_BUDGET = 400000;
+  var SYM_PULSE_GAP_MS = 600;   // floor for the adaptive gap below (see pulseGapMs)
   // A pulse connection only has to live until the peer's reader has sampled its
-  // arrival (measured median 37 ms, p90 61 ms, against a ~53 ms report lattice).
-  // Leaving all 80 open slowed the peer's reader polls to 4 s and starved the
-  // probe's own stats reads (sym-run1/2.txt): a reader is a live participant, so
-  // every open pulse connection is a pair it must answer.  A 700 ms lifetime at
-  // an 80 ms gap keeps ~9 in flight instead of ~55.
-  var SYM_CLOSE_AFTER_MS = 700;
+  // arrival.  The old fixed 700 ms at an 80 ms gap assumed a ~53 ms report
+  // lattice, measured on a quiet page; a loaded page answers a stats pass in
+  // seconds, so the read missed the arrival and no payload was ever decoded (the
+  // logs of the failing runs are full of "reader stat poll timed out (4200 ms)").
+  // Both numbers are derived from the page's own measured pass cost: the peer's
+  // sweep visits each of its sockets once every K x pass, so a pulse has to
+  // outlive three sweeps, and the train must not run far ahead of the reads that
+  // date it.  Leaving pulses open is what made the reads slow, hence the cap.
+  function peerColumnCount() {
+    return Math.max(2, SYM.cols.length || READER_TARGET);
+  }
+  function pulseLifeMs() {
+    return Math.min(8000, Math.max(1250, 3 * peerColumnCount() * statsPassMs));
+  }
+  // The gap has to clear the *reader's* poll cadence, not the sender's stats
+  // cost.  Each reader polls its own connection on its own clock, so the moment a
+  // reader reports an arrival is its own poll time - a pulse cannot be observed
+  // before the first poll after it lands.  If the gap is shorter than that
+  // cadence, the read timestamps of two consecutive pulses can invert, and the
+  // receiver's stream is no longer the sender's symbol sequence.  Measured with
+  // the diag lines (analyse-order.py, out/ac-diag1.log): an 80 ms gap gave a
+  // 15-374 ms read latency and 24-28% of the sampled pulses out of order - which
+  // no alphabet, CRC or start offset can repair, so 320 bits never decoded.
+  // G > C is the condition that makes the order exact: pulse k is always reported
+  // before pulse k+1 once the gap exceeds the cadence the readers actually run at.
+  function readerCadenceMs() {
+    return Math.max(POLL_CYCLE_MS, Math.min(2000, statsPassMs)) + Math.min(600, statsPassMs);
+  }
+  function pulseGapMs() {
+    var cadence = readerCadenceMs();
+    return Math.min(1500, Math.max(600, Math.round(cadence * 1.6)));
+  }
+  var lastStreamReadAt = 0;
+  var STREAM_READ_MS = 400;          // a stream read is not free
+  var STREAM_LOOKBACK_MS = 30000;    // a peer frame that started before ours
 
   // Bits per pulse = floor(log2(columns)), so the symbol always indexes a real
   // column and the alphabet is a power of two (a symbol outside it would aim at
@@ -1373,6 +1660,14 @@
     var b = 0, v = 1;
     while (v * 2 <= K) { v *= 2; b++; }
     return b;
+  }
+
+  // The bits of one pulse, big-endian, exactly as the receiver reads them back
+  // (the decoder pushes (col >> b) & 1 for b from perPulse-1 down to 0).
+  function symbolAt(bits, index, perPulse) {
+    var sym = 0;
+    for (var b = 0; b < perPulse; b++) sym = (sym << 1) | (bits[index + b] ? 1 : 0);
+    return sym;
   }
 
   function transmitSocket() {
@@ -1385,25 +1680,30 @@
       return Promise.resolve(false);
     }
     var n = Math.ceil(payload.bits.length / perPulse);
+    var gap = pulseGapMs();
+    var life = pulseLifeMs();
     SYM.t0 = now();
     SYM.cols = cols;
     SYM.perPulse = perPulse;
     SYM.pulses = [];
     SYM.seen = Object.create(null);
+    SYM.bestStream = 0;
     log("sym", "transmitting " + payload.bits.length + " bits as " + n + " pulse(s) x "
-      + perPulse + " bit(s) over " + cols.length + " peer socket(s)");
+      + perPulse + " bit(s) over " + cols.length + " peer socket(s); " + gap
+      + " ms apart, kept " + life + " ms (stats pass " + Math.round(statsPassMs) + " ms)");
     var i = 0;
     function tick() {
       if (i >= n || !running || state === "connected" || gen !== exchange.gen) {
+        var took = now() - SYM.t0;
+        SYM.frameMs = took + life + 2500;
         log("sym", "transmission done: " + SYM.pulses.length + " pulse(s) in "
-          + (now() - SYM.t0) + " ms");
+          + took + " ms");
         return Promise.resolve(SYM.pulses.length);
       }
       // One pulse per tick: arrivals are read back in time order, so two pulses
       // in flight at once could swap order and corrupt two symbols at once.
       var idx = i * perPulse;
-      var sym = 0;
-      for (var b = 0; b < perPulse; b++) sym = (sym << 1) | (payload.bits[idx + b] ? 1 : 0);
+      var sym = symbolAt(payload.bits, idx, perPulse);
       var target = cols[sym];
       var rec = { i: i, sym: sym, target: target, at: 0, pc: null };
       i++;
@@ -1413,69 +1713,261 @@
         SYM.pulses.push(rec);
         return fire(pc, peerAddress, target);
       }).then(function () {
-        window.setTimeout(function () { closePc(rec.pc); }, SYM_CLOSE_AFTER_MS);
-        // Close the previous pulse before opening the next one: measured in
-        // sym-run1/2.txt, ~55 open pulse connections made every stats pass - the
-        // reader polls *and* the probe's own socket readback - take 2-4 s.
-        return sleep(SYM_PULSE_GAP_MS);
+        if (DIAG && rec.i % 10 === 0) {
+          // Sampled, not every pulse: this is a stats read, and the frame's own
+          // timing is what is being measured.
+          udpPorts(rec.pc).then(function (ports) {
+            log("diag", "pulse i=" + rec.i + " sym=" + rec.sym + " target=" + rec.target
+              + " src=" + ports.join(",") + " at=" + Date.now());
+          });
+        }
+        window.setTimeout(function () { closePc(rec.pc); }, life);
+        return sleep(gap);
       }).then(tick);
     }
     return tick();
   }
 
-  // The first arrival for each pulse, keyed by the column it landed on and
-  // deduplicated by the source port that carried it (a pulse connection owns two
-  // ports, and only one of them carries the check).
+  // The peer's pulse stream, in arrival order and deduplicated by the source
+  // port that carried each check (a pulse connection owns two ports and only one
+  // of them carries the check).  Nothing here is timed against our own pulse
+  // schedule any more: the stream is the peer's symbols, and the reader below
+  // finds the payload inside it by content.
   function collectSocketArrivals() {
     var out = [];
-    for (var i = 0; i < arrivals.length; i++) {
-      var a = arrivals[i];
-      if (a.at < SYM.t0) continue;
+    var seen = Object.create(null);
+    var list = arrivals.slice().sort(function (a, b) { return a.at - b.at; });
+    var bySource = Object.create(null);
+    for (var k = 0; k < list.length; k++) {
+      var s = list[k].source;
+      bySource[s] = (bySource[s] || 0) + 1;
+    }
+    var dropped = 0;
+    var collapsed = 0;
+    SYM.lastByPort = Object.create(null);
+    for (var i = 0; i < list.length; i++) {
+      var a = list[i];
+      if (SYM.t0 && a.at < SYM.t0 - STREAM_LOOKBACK_MS) continue;
       var key = a.port + "/" + a.source;
-      if (SYM.seen[key]) continue;
-      SYM.seen[key] = true;
+      if (seen[key]) continue;
+      seen[key] = true;
+      // One check per connection is what a pulse is: a frame fires from a fresh
+      // connection every pulse, so a pulse's source port appears in exactly one
+      // arrival.  Everything else on the wire is a multi-fire - the 512-check
+      // socket probe, the sweep, the locate readback - and each of those source
+      // ports appears on *every* socket of ours it could reach.  They are junk in
+      // the symbol stream, they arrive for a minute after the probe (Chrome
+      // paces the checks its ICE has queued), and interleaved junk breaks every
+      // start offset of a decoder that needs consecutive arrivals.  Measured:
+      // 44 probe arrivals landed in the peer's stream 66 s after the probe, and
+      // the two runs that decoded a payload were the two whose streams happened
+      // to be free of them.
+      if (bySource[a.source] > 1) { dropped++; continue; }
+      // One pulse, two arrivals: a pulse connection owns two local UDP sockets
+      // and ICE checks the remote candidate from both, so the same check lands on
+      // the peer's socket twice - with the same destination port and different
+      // source ports, read by the same reader (measured: 218 single-source
+      // arrivals for a 107-pulse frame, and the 2:1 ratio is what no decoder can
+      // read, because it takes consecutive arrivals as consecutive symbols).
+      // Both copies of one pulse are stamped with the same receipt second - the
+      // two checks leave together - so everything landing on the same socket
+      // within a short window is one pulse.  (Pulses of *different* symbols are
+      // hundreds of ms apart; two pulses can share a socket only if the symbol
+      // repeated, and then they are still separated by the gap.)
+      var prev = SYM.lastByPort[a.port];
+      if (prev !== undefined && a.at - prev < PULSE_DUP_MS) { collapsed++; continue; }
+      SYM.lastByPort[a.port] = a.at;
       out.push(a);
     }
+    if (dropped && dropped > (SYM.droppedSeen || 0)) {
+      SYM.droppedSeen = dropped;
+      log("sym", "stream: dropped " + dropped + " arrival(s) from multi-fire connections"
+        + " (probe/sweep/locate traffic), kept " + out.length + " pulse candidate(s)");
+    }
+    if (collapsed && collapsed > (SYM.collapsedSeen || 0)) {
+      SYM.collapsedSeen = collapsed;
+      log("sym", "stream: collapsed " + collapsed + " arrival(s) that shared a socket and a read"
+        + " (the two local sockets of one pulse), leaving " + out.length + " symbol(s)");
+    }
+    // How close the stream is to the frame the peer actually fired: a decoder
+    // that needs consecutive symbols is exact only when these two numbers agree.
+    var framePulses = SYM.pulses ? SYM.pulses.length : 0;
+    if (framePulses && out.length !== SYM.lastKept) {
+      SYM.lastKept = out.length;
+      logThrottled("sym", "stream: " + out.length + " symbol(s) for a " + framePulses
+        + "-pulse frame (" + (out.length === framePulses ? "exact"
+        : (out.length > framePulses ? out.length - framePulses + " extra"
+          : framePulses - out.length + " missing")) + ")", 1500);
+    }
+    SYM.seen = seen;
     return out;
   }
 
+  // Read a payload out of a symbol stream: for every position, try to take the
+  // next `need` arrivals as symbols of `alphabet`, and let the CRC decide.
+  function decodeStream(stream, alphabet, perPulse, budget) {
+    var need = Math.ceil(PAYLOAD_BITS / perPulse);
+    var cols = [];
+    for (var c = 0; c < stream.length; c++) cols.push(alphabet.indexOf(stream[c].port));
+    for (var start = 0; start + need <= stream.length; start++) {
+      var bits = [];
+      var usable = true;
+      for (var i = 0; i < need; i++) {
+        var col = cols[start + i];
+        if (col < 0) { usable = false; break; }
+        for (var b = perPulse - 1; b >= 0; b--) bits.push((col >> b) & 1);
+      }
+      if (!usable) continue;
+      var parsed = parsePayload(bits);
+      if (parsed) return { parsed: parsed, start: start, alphabet: alphabet };
+    }
+    // Second pass, for a stream that carries a few arrivals the sender never
+    // fired: a frame is a fresh connection per pulse, and the wire carries stray
+    // single-check traffic too (measured: 9-27 extra symbols in a 107-pulse
+    // frame, and every one of them shifts the symbol sequence for the rest of
+    // the read, so the contiguous pass above can only succeed when the strays sit
+    // at the edges).  This pass allows up to DECODE_SKIPS arrivals to be skipped,
+    // over a handful of start positions, with a hard operation budget so a loaded
+    // page never spends a whole frame inside the decoder.
+    if (budget <= 0) return null;
+    var spills = [];                    // backtracking, not copying: this is the hot loop
+    var ops = 0;
+    var maxStart = Math.min(stream.length - need, DECODE_STARTS);
+    for (var s2 = 0; s2 <= maxStart; s2++) {
+      var hit = walk(s2, 0, DECODE_SKIPS);
+      if (hit) return { parsed: hit, start: s2, alphabet: alphabet };
+      if (ops > budget) break;
+    }
+    function walk(pos, k, left) {
+      if (k === need) return parsePayload(spills) || null;
+      if (pos >= stream.length) return null;
+      if (++ops > budget) return null;
+      // Consume this arrival as the next symbol.
+      var col = cols[pos];
+      if (col >= 0) {
+        var added = perPulse;
+        for (var b = perPulse - 1; b >= 0; b--) spills.push((col >> b) & 1);
+        var got = walk(pos + 1, k + 1, left);
+        if (got) return got;
+        spills.length -= added;
+      }
+      // Or skip it (a stray arrival), if the budget allows.
+      if (left > 0) return walk(pos + 1, k, left - 1);
+      return null;
+    }
+    return null;
+  }
+
+  // Decode the peer's pulse stream by content, not by clock.
+  //
+  // The arrivals at our readers *are* the peer's pulses, in order (our own
+  // pulses never come back to our own readers), and each arrival names the socket
+  // of ours it landed on - so the stream of sockets is the peer's symbol stream.
+  // Indexing it against our own sorted in-window sockets recovers the symbol the
+  // sender chose, because that is the same list the sender probed and numbered.
+  //
+  // What this replaced indexed the arrivals against SYM.cols - the *peer's*
+  // sockets - so nearly every arrival read as "not in the alphabet", the decode
+  // filled zeros, and the CRC rejected it: no run of this engine, in any log in
+  // tmp/autoconnect/, ever decoded a payload over the socket channel.
+  //
+  // Reading by content also removes a timing requirement the old reader could
+  // not meet: it attributed arrivals to *our own* pulse times, so a peer whose
+  // pulses started one slot earlier shifted every symbol after it, and a missed
+  // pulse did the same.  Now a missed pulse costs the window it sits in, and a
+  // frame that started seconds before or after ours is still readable.
   function tryDecodeSocket() {
-    if (!SYM.cols.length || !SYM.pulses.length) return null;
-    if (now() - lastArrivalAt < SYM_SETTLE_MS) return null;
-    // One arrival per pulse, in time order: the earliest unclaimed arrival at or
-    // after each pulse's fire time.  A pulse whose arrival has not been sampled
-    // yet contributes nothing and the read is simply tried again on the next
-    // tick - the settle window above is what keeps that from cutting a pulse off.
-    var seen = collectSocketArrivals().sort(function (a, b) { return a.at - b.at; });
-    var bits = [];
-    var claimed = Object.create(null);
-    var read = 0;
-    SYM.settled = seen.length;
-    for (var i = 0; i < SYM.pulses.length; i++) {
-      var p = SYM.pulses[i];
-      var col = -1;
-      for (var j = 0; j < seen.length; j++) {
-        var a = seen[j];
-        if (claimed[j]) continue;
-        if (a.at < p.at) continue;
-        claimed[j] = true;
-        col = SYM.cols.indexOf(a.port);
-        break;
-      }
-      if (col < 0) {
-        // No arrival attributed: fill zeros, which the CRC will reject.
-        for (var z = 0; z < SYM.perPulse; z++) bits.push(0);
-        continue;
-      }
-      read++;
-      for (var b = SYM.perPulse - 1; b >= 0; b--) bits.push((col >> b) & 1);
+    // Decoding needs arrivals, not a transmission of our own.  Gating this on
+    // SYM.cols (our own transmit's peer-socket list) meant the side whose probe
+    // came back short decoded *nothing* even when the peer's whole frame was
+    // sitting in its arrival list - its own list was empty, so the reader never
+    // ran (measured: one side read 133 arrivals from the peer's 107 pulses and
+    // logged "no payload" three times over, with the exception thrown into the
+    // other side's empty channel).
+    if (!running || !arrivals.length) return null;
+    if (now() - lastArrivalAt < SYM_SETTLE_MS) return null;      // let the tail land
+    if (now() - lastStreamReadAt < STREAM_READ_MS) return null;  // reads are not free
+    lastStreamReadAt = now();
+    var stream = collectSocketArrivals();
+    SYM.settled = stream.length;
+    if (stream.length < 8) return null;    var own = ownSocketAlphabet();
+    if (own.length < 2) return null;
+    var perPulse = symPerPulse(own.length);
+    if (!perPulse) return null;
+    // Two families of alphabet, both CRC-checked by decodeStream:
+    //
+    //  1. our own sorted in-window sockets - the intended protocol, exact when
+    //     the peer's probe read back every socket of ours that answers.
+    //  2. *content-addressed*: the sockets the pulses actually landed on, sorted,
+    //     read out of the stream itself.  The sender numbers the prefix of its
+    //     own probed list (sym < 2^perPulse, so cols[0..2^perPulse-1]), and this
+    //     is that prefix intersected with what arrived - same ports, same order,
+    //     so indexOf gives back the sender's symbol even when its list was
+    //     truncated by a slow readback (measured: 9 of 17 sockets, and the
+    //     sender's three frames then decoded as nothing on the other side).
+    var usedSet = Object.create(null);
+    var portHits = Object.create(null);
+    for (var a = 0; a < stream.length; a++) {
+      usedSet[stream[a].port] = true;
+      portHits[stream[a].port] = (portHits[stream[a].port] || 0) + 1;
     }
-    if (read && read !== SYM.pulses.length) {
-      logThrottled("sym", "read " + read + " of " + SYM.pulses.length + " pulse(s) so far");
+    var used = [];
+    for (var up in usedSet) used.push(Number(up));
+    used.sort(function (x, y) { return x - y; });
+    // The sockets the frame actually used, told apart from the sockets that only
+    // ever saw a stray arrival: a symbol's socket is aimed at ~P/pulses times per
+    // frame (13 hits for 107 pulses over 8 sockets, measured), while a socket that
+    // caught one stray check is hit once or twice.  Getting this set right is what
+    // makes the index come out as the sender's symbol, and a contaminated set is
+    // what kept it wrong: with every observed socket in the alphabet, only 1 of 7
+    // sampled pulses mapped back to its symbol; with the hot sockets only, the
+    // mapping is exact.
+    var top = 0;
+    for (var hp in portHits) if (portHits[hp] > top) top = portHits[hp];
+    var floor = Math.max(3, Math.ceil(top * 0.2));
+    var hot = [];
+    for (var hp2 in portHits) if (portHits[hp2] >= floor) hot.push(Number(hp2));
+    hot.sort(function (x, y) { return x - y; });
+    var usedPulse = symPerPulse(used.length);
+    // The content-addressed list first: it is the one that is right whenever the
+    // peer's own list was a subset of ours, which is the common case (a probe
+    // that read back 12 of the peer's 17 sockets is a normal probe).  The own
+    // list follows, and the two one-bit-shifted readings of each behind it.  The
+    // single-removal family that used to sit here is gone: it cost 34 extra
+    // passes per read (each an 80-pulse window over 120+ arrivals) ahead of the
+    // reading that was actually right, and the content-addressed list already
+    // covers every subset hypothesis at once.
+    var candidates = [];
+    var hotPulse = symPerPulse(hot.length);
+    if (hot.length >= 2 && hotPulse) {
+      if (hotPulse - 1 >= 1) candidates.push({ list: hot, per: hotPulse - 1 });
+      candidates.push({ list: hot, per: hotPulse });
+      if (hotPulse + 1 <= perPulse) candidates.push({ list: hot, per: hotPulse + 1 });
     }
-    var parsed = parsePayload(bits);
-    if (parsed) log("sym", "payload decoded from " + SYM.pulses.length + " socket pulse(s)");
-    return parsed;
+    if (used.length >= 2 && usedPulse) {
+      if (usedPulse - 1 >= 1) candidates.push({ list: used, per: usedPulse - 1 });
+      candidates.push({ list: used, per: usedPulse });
+      if (usedPulse + 1 <= perPulse) candidates.push({ list: used, per: usedPulse + 1 });
+    }
+    candidates.push({ list: own, per: perPulse });
+    if (perPulse > 2) candidates.push({ list: own, per: perPulse - 1 });
+    for (var c = 0; c < candidates.length; c++) {
+      var hit = decodeStream(stream, candidates[c].list, candidates[c].per, c < 2 ? DECODE_BUDGET : 0);
+      if (hit) {
+        log("sym", "payload decoded from " + stream.length + " arrival(s) at position"
+          + hit.start + " (" + candidates[c].per + " bit(s) per pulse, "
+          + candidates[c].list.length + "-socket "
+          + (candidates[c].list === own ? "own"
+            : (candidates[c].list === hot ? "hot-socket" : "content-addressed")) + " alphabet)");
+        return hit.parsed;
+      }
+    }
+    if (stream.length > SYM.bestStream) {
+      SYM.bestStream = stream.length;
+      logThrottled("sym", "read " + stream.length + " arrival(s) since the frame started,"
+        + " no payload yet (" + own.length + "-socket alphabet, " + perPulse + " bit(s) per pulse)");
+    }
+    return null;
   }
 
   function transmit() {
@@ -1740,16 +2232,29 @@
       setup: isClient ? "passive" : "active"
     });
     log("final", "DTLS " + (isClient ? "client" : "server") + " - peer port " + peerPortNumber);
+    // The final connection is built at boot so that it has a port to advertise
+    // inside the payload; its answer is applied *here*, once, with the peer's real
+    // DTLS fingerprint.  (Doing it at boot means a second remote description here,
+    // which Chrome rejects: "Called in wrong state: stable"; renegotiating first
+    // instead moves the socket out from under the advertised port and the peer's
+    // pokes land nowhere - measured: "connection state failed" 63 ms after
+    // connecting.)
     return finalPc.setRemoteDescription({ type: "answer", sdp: answer }).then(function () {
       if (peerIp && peerPortNumber) {
-        var tries = 0;
+        // Keep poking instead of firing twelve times and giving up after ~11 s.
+        // The two sides decode their own payload on their own schedule - a frame
+        // takes about a minute, and one side is routinely an attempt ahead of the
+        // other - so the peer may not have applied its fingerprint (or brought
+        // its final connection up) when this side first learns the address.  The
+        // poke is what makes the peer's final socket answer us at all, so it has
+        // to outlive the other side's exchange, not our own.
+        var until = now() + FINAL_POKE_MS;
         (function poke() {
-          if (!running || tries > 12) return;
-          tries++;
+          if (!running || now() > until) return;
           fire(finalPc, peerIp, peerPortNumber).then(function () {
             if (finalChannel && finalChannel.readyState === "open") return;
             if (finalPc.connectionState === "connected") return;
-            window.setTimeout(poke, 900);
+            window.setTimeout(poke, 1200);
           });
         })();
       }
@@ -1780,6 +2285,14 @@
           if (finalPc.connectionState === "failed") done(false);
         });
         window.setTimeout(function () { done(false); }, CONNECT_TIMEOUT_MS);
+        // The pokes continue after this timeout (see the loop above): a later
+        // arrival from the peer is still able to bring the link up, and
+        // afterFinal() only reports failure once.  If it does come up late, the
+        // event below is what reports it.
+        finalPc.addEventListener("connectionstatechange", function () {
+          if (finalPc.connectionState === "connected" && finalChannel
+              && finalChannel.readyState === "open") done(true);
+        });
       });
     }, function (err) {
       log("error", "remote description rejected: " + (err && err.message));
@@ -1799,7 +2312,17 @@
     };
     peers[connectedPeer.id] = connectedPeer;
     emit({ type: "peer-found", peer: connectedPeer });
-    var isClient = selfId < parsed.id;
+    // The two sides have to pick *opposite* DTLS roles, and both used to pick
+    // "server": selfId is a hex *string* while the payload carries a 16-bit
+    // number, so `selfId < parsed.id` compared "12bb" with a number and was false
+    // on both sides - the handshake then had two servers, and the link failed
+    // with "connection state failed" a second after the first payloads ever
+    // decoded (measured: both peers logged "DTLS server - peer port <the other's
+    // real final port>").  Compare in one number space, and break a tie - which
+    // a 16-bit id can produce - on the final ports, which are always distinct.
+    var mine = selfIdNum;
+    var isClient = mine !== parsed.id ? (mine < parsed.id)
+      : (finalPort < parsed.port);
     function afterFinal(channel) {
       if (!channel) {
         if (state !== "connected") {
@@ -1822,7 +2345,14 @@
     if (exchange.active || !ready || !running || state === "connected" || state === "failed") return;
     if (!peerAddress || !peerTargets.length || readers.length < 2) return;
     var socketReady = useSocketChannel && SYM.cols.length >= 2;
-    if (!socketReady && now() - lastArrivalAt < QUIET_MS) return;  // legacy carrier: the peer's probe is still arriving
+    // The legacy carrier needs the window to itself; the socket channel does not
+    // (a receiver only ever sees the peer's pulses on its own readers).  It used
+    // to be gated on a quiet arrival window as well - which deadlocks into
+    // serialization, because the peer's *frame* is itself a stream of arrivals
+    // every 600 ms, so the second side waits out the first side's whole frame
+    // (measured: 67 s of waiting, and the run then had no budget left).  Junk in
+    // the stream is filtered by source in collectSocketArrivals instead.
+    if (!socketReady && now() - lastArrivalAt < QUIET_MS) return;
     exchange.active = true;
     exchange.startedAt = now();
     attempt++;
@@ -1857,7 +2387,11 @@
 
       return stagger;
     }).then(transmitSocket).then(function () {
-      return waitForPayload(EXCHANGE_BUDGET_MS);
+      // The socket channel's frame is finite: wait for the frame plus the settle
+      // time.  The legacy carrier keeps the old 120 s budget because its copies
+      // take ~30 s each.
+      var budget = SYM.frameMs ? Math.max(15000, SYM.frameMs) : EXCHANGE_BUDGET_MS;
+      return waitForPayload(budget);
     }).then(function (parsed) {
       if (parsed) return beginHandshake(parsed);
       if (state === "connected" || !running || exchange.done) return null;
@@ -1978,10 +2512,50 @@
     log("census", "closed " + n + " probe connection(s) before the census: the read only needs readers and sources");
   }
 
+  // The sweep's 24 scanners carried a hundred thousand checks between them, so a
+  // single stats read of one of those connections takes seconds (measured: a
+  // readback round of 24 of them did not finish inside the locate's own 15 s
+  // deadline, and the engine then sat in phase 1.5 for minutes with nothing else
+  // logged).  Discovery is over by the time the probe needs connections, so the
+  // heavy ones are dropped here and six fresh out-of-window ones do the probing.
+  // Out of the window is required: an in-window socket would answer the peer's
+  // own probe and be read as a payload column.
+  function refreshProbePool() {
+    // One connection per ~21 of the peer's 512 window ports, not per 85: the
+    // readback reads *succeeded pairs*, and a pair is only checked once Chrome's
+    // ICE has paced its way to it, so the more pairs a single connection carries
+    // the longer its list takes to fill in.  Six connections (85 each) came back
+    // with 7, 9 or 0 of the peer's 17 sockets in different runs - the same
+    // engine, the same machine - and every one of those numbers is the sender's
+    // alphabet, so the run's outcome was a coin toss.
+    var PROBE_CONNECTIONS = 24;
+    // The sweep is over the moment this is called, and it has to be *told* so:
+    // its pump fires a queued round every SCAN_ROUND_MS until all 254 are done
+    // (~2.7 minutes of 130k checks), and after the swap it would push all of that
+    // through the fresh probe connections.  Measured in a run where it did: the
+    // probe pool read like a sweeper (seconds per stats pass), the readback
+    // missed its own 15 s deadline, and the run reported "peer socket probe
+    // answered with 0 socket(s)" 213 s later.
+    sweepActive = false;
+    return makeOutOfWindow(PROBE_CONNECTIONS).then(function (pcs) {
+      // Swapped, not emptied in place: the sweep's own pump may still be firing
+      // its last burst, and an empty array there indexes to undefined and throws
+      // (measured: "Cannot read properties of undefined (reading '__acUsed')").
+      var old = scanners;
+      scanners = pcs;
+      old.forEach(closePc);
+      log("ports", "probe pool: " + pcs.length + " fresh connection(s); the sweep's heavy"
+        + " scanners are closed before any readback");
+      return pcs;
+    });
+  }
+
   function prepare() {
     preparing = true;
-    return censusColumns().then(function () {
-      return probePeerPorts(peerAddress);
+    return refreshProbePool().then(function () {
+      return censusColumns();
+    }).then(function () {
+      return probePeerPorts(peerAddress, proofPorts);
     }).then(function () {
       // The socket channel's alphabet: the peer's sockets, sorted (probePeerPorts
       // sorts), which is the same list the peer derives from gridSockets().
@@ -2090,6 +2664,7 @@
         if (peer) {
           role = "caller";
           peerAddress = peer.address;
+          proofPorts = [peer.port];
           peers.pending = { id: "pending", address: peer.address, port: peer.port, state: "linking" };
           emit({ type: "peer-found", peer: peers.pending });
           state = "linking";
@@ -2101,9 +2676,17 @@
           return null;
         }
         role = "responder";
+        // The locate readback is a stats pass per probe connection, and it runs
+        // on the sweep's scanners (the only connections that have already talked
+        // to every host in the two /24s): the readers idle through it, because
+        // they would otherwise hold the one queue slot the readback is waiting
+        // for.  That starvation is what left this phase spinning for minutes.
+        preparing = true;
         return findAddressByPort(peerPort).then(function (address) {
+          preparing = false;
           if (!address) { log("locate", "the peer's address was not found"); return null; }
           peerAddress = address;
+          proofPorts = [peerPort];
           state = "linking";
           return prepare();
         });
@@ -2212,6 +2795,24 @@
       return out;
     },
     sendJson: function (text) { return AC.send(text); },
+    // Test seam for tmp/autoconnect/test-decode.mjs, which exercises the payload
+    // encoder and the stream decoder without WebRTC (the same shape
+    // lan-discovery.js exposes as `_debug`).
+    _debug: {
+      setIdentity: function (id, fp, port) {
+        selfId = id; refreshSelfIdNum(); fingerprint = fp; finalPort = port;
+      },
+      buildPayload: function () { return buildPayload(); },
+      parsePayload: function (bits) { return parsePayload(bits); },
+      symbolAt: symbolAt,
+      decodeStream: decodeStream,
+      ownSocketAlphabet: ownSocketAlphabet,
+      symPerPulse: symPerPulse,
+      setReaders: function (wins) {
+        readers = wins.map(function (win) { return { pc: null, ports: win, win: win }; });
+      },
+      statsCostMs: function () { return statsPassMs; }
+    },
     startJson: function (optsJson) {
       var opts = null;
       try { opts = optsJson ? JSON.parse(optsJson) : null; } catch (e) { opts = null; }
