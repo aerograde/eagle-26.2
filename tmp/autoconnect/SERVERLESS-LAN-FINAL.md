@@ -363,8 +363,29 @@ the LAN address, no flags, no discovery server, each scored on its own exit stat
 | run | readback | frame | outcome |
 | --- | --- | --- | --- |
 | 1 | 11 and 7 sockets | 107 and 160 pulses per copy | **connected** - `MESSAGE DELIVERED: alice -> bob`, `VERDICT: connected in both windows`, exit 0. Both sides decoded **copy 1**: `payload decoded by filling 3 hole(s) in a 104-arrival copy 1 of 7` (candidate 57 of 512) and `payload decoded by filling 1 hole(s) in a 159-arrival copy 1 of 6` (candidate 2 of 4). |
-| 2 | 3-11 sockets | 107 and 160 pulses per copy | one side connected, the other did not: the 4-socket side read 248 of 320 arrivals and gave up on the copy (`72 pulse(s) never arrived`), then retried with a 5-socket readback. |
-| 3 | see below | | |
+| 2 | 3-11 sockets | 107 and 160 pulses per copy | one side connected, the other did not: the 4-socket side read 248 of 320 arrivals and gave up on the copy (`72 pulse(s) never arrived`), then retried with a 5-socket readback. Verdict `NOT connected: {'alice': 'linking', 'bob': 'fallback'}`, exit 1. |
+
+A third artifact run was not completed: the engine harness (below) has to run on the
+same LAN and the same two-port window, so the two cannot run at once without
+confounding each other.
+
+**The engine harness on the final bytes** (`python3 tmp/autoconnect/run-peers.py 8124
+300000`, two headless Chromium engine pages, no discovery server) did **not** connect
+in this state: both peers ended `"state": "linking"`, and the side whose readback was
+four sockets read 236 of 320 arrivals (`84 pulse(s) never arrived`) - the same
+4-socket/160-pulse-copy path as run 2, not the two-copy decode path. The first
+harness run of this pass, before the reader-lottery cut but with the same two-copy
+logic, had one side decode an 80-pulse copy perfectly (160 of 160 arrivals).
+
+**These numbers were taken on a loaded host, and that is the confound.** The same
+engine that read 104 of 107 and 159 of 160 arrivals in run 1 read 236 of 320 in the
+harness minutes later; `uptime` in that window was a load average of 7.8-9.6 with
+Adobe Creative Cloud services at 100-140% CPU and an unrelated `grep -rl` at ~99%.
+The doc's own item 5 is the same effect from the other direction (a stats pass was
+measured at 4-60 s on a loaded machine against 20-60 ms on a quiet one), and the
+readback here is the quantity that suffers first: 3-11 sockets against the 13-16 of
+the earlier acceptance run. A reliability number from today is a number for this
+host with that load, not for the carrier.
 
 The lever that produced run 1 is items 18-20: the column list is read as first
 appearances (before that, a 4-pulse sweep was invisible and the failing side had no
